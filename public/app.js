@@ -83,6 +83,10 @@ async function attempt(fn, okMsg) {
   }
 }
 
+const mobileQuery = window.matchMedia('(max-width: 760px)');
+const isMobile = () => mobileQuery.matches;
+mobileQuery.addEventListener('change', () => renderView());
+
 function pref(key, fallback) {
   try { const v = localStorage.getItem('horario.' + key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; }
 }
@@ -102,6 +106,7 @@ const state = {
   items: [],
   view: 'month',
   cursor: startOfMonth(new Date()),
+  selectedDay: dateKey(new Date()),
   showClasses: pref('showClasses', true),
   filter: { type: 'all', subject: '', showDone: pref('showDone', false) },
 };
@@ -174,18 +179,18 @@ function renderAuth(mode) {
    Estructura principal
    ============================================================ */
 const VIEWS = [
-  ['month', '📅 Mes'],
-  ['week', '🗓 Horario'],
-  ['items', '✅ Tareas y exámenes'],
-  ['subjects', '📘 Asignaturas'],
-  ['settings', '⚙️ Ajustes'],
+  ['month', '📅', 'Mes', 'Mes'],
+  ['week', '🗓', 'Horario', 'Horario'],
+  ['items', '✅', 'Tareas y exámenes', 'Tareas'],
+  ['subjects', '📘', 'Asignaturas', 'Materias'],
+  ['settings', '⚙️', 'Ajustes', 'Ajustes'],
 ];
 
 function renderShell() {
   $('#app').innerHTML = `
     <header class="topbar">
       <div class="brand">📚 Mi Horario</div>
-      <nav class="tabs">${VIEWS.map(([id, label]) => `<button data-view="${id}">${label}</button>`).join('')}</nav>
+      <nav class="tabs">${VIEWS.map(([id, icon, label, short]) => `<button data-view="${id}"><span class="ic">${icon}</span><span class="long">${label}</span><span class="short">${short}</span></button>`).join('')}</nav>
       <div class="userbox"><span class="name">${esc(state.user.name)}</span><button class="btn btn-sm" id="logout">Salir</button></div>
     </header>
     <main id="view"></main>`;
@@ -242,16 +247,29 @@ function bindViewEvents(root) {
     const edit = t.closest('[data-edit]');
     if (edit) { e.stopPropagation(); return openItemModal(itemById(Number(edit.dataset.edit)), { returnTo }); }
     const cell = t.closest('.day-cell');
-    if (cell) return openDayModal(cell.dataset.date);
+    if (cell) return isMobile() ? selectDay(cell.dataset.date) : openDayModal(cell.dataset.date);
     const tt = t.closest('.tt-cell');
     if (tt) return openSlotModal(Number(tt.dataset.slot), Number(tt.dataset.day));
   });
 }
 
+function selectDay(key) {
+  state.selectedDay = key;
+  const d = parseKey(key);
+  if (d.getMonth() !== state.cursor.getMonth() || d.getFullYear() !== state.cursor.getFullYear()) state.cursor = startOfMonth(d);
+  renderView();
+}
+function goMonth(delta) {
+  state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + delta, 1);
+  const today = new Date();
+  state.selectedDay = dateKey(today.getMonth() === state.cursor.getMonth() && today.getFullYear() === state.cursor.getFullYear() ? today : state.cursor);
+  renderView();
+}
+
 const ACTIONS = {
-  prev: () => { state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() - 1, 1); renderView(); },
-  next: () => { state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + 1, 1); renderView(); },
-  today: () => { state.cursor = startOfMonth(new Date()); renderView(); },
+  prev: () => goMonth(-1),
+  next: () => goMonth(1),
+  today: () => { state.cursor = startOfMonth(new Date()); state.selectedDay = dateKey(new Date()); renderView(); },
   newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, returnTo }),
   newSubject: () => openSubjectModal(null),
   editSubject: (d) => openSubjectModal(subjectById(Number(d.id))),
@@ -319,8 +337,22 @@ function monthView() {
   const pendingExams = monthItems.filter((i) => i.type === 'exam' && !i.done).length;
   const pendingTasks = monthItems.filter((i) => i.type === 'task' && !i.done).length;
 
+  const mobile = isMobile();
+  if (mobile && !weeks.flat().some((d) => dateKey(d) === state.selectedDay)) {
+    const firstVisible = weeks.flat().find((d) => d.getMonth() === m);
+    if (firstVisible) state.selectedDay = dateKey(firstVisible);
+  }
   const cells = weeks.flat().map((d) => {
     const k = dateKey(d);
+    if (mobile) {
+      const dayItems = byDay.get(k) || [];
+      const groups = state.showClasses ? groupClasses(classCache.get(d.getDay())) : [];
+      return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''} ${k === state.selectedDay ? 'selected' : ''}" data-date="${k}">
+        <span class="day-num">${d.getDate()}</span>
+        ${groups.length ? `<div class="cbar">${groups.map((g) => `<i style="background:${g.subject.color};flex:${g.count}"></i>`).join('')}</div>` : ''}
+        <div class="dots">${dayItems.slice(0, 4).map((i) => `<i class="${i.type} ${i.done ? 'done' : ''}" style="--c:${subjectById(i.subject_id)?.color || 'var(--muted)'}"></i>`).join('')}${dayItems.length > 4 ? `<b>+${dayItems.length - 4}</b>` : ''}</div>
+      </div>`;
+    }
     const classes = state.showClasses ? classCache.get(d.getDay()) : [];
     return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''}" data-date="${k}">
       <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea">+</button></div>
@@ -330,21 +362,23 @@ function monthView() {
   });
 
   return `
-    <div class="toolbar">
-      <button class="btn" data-action="prev" title="Mes anterior">‹</button>
-      <button class="btn" data-action="next" title="Mes siguiente">›</button>
-      <button class="btn" data-action="today">Hoy</button>
+    <div class="toolbar month-toolbar">
+      <button class="btn" data-action="prev" title="Mes anterior" aria-label="Mes anterior">‹</button>
       <h2>${esc(title)}</h2>
+      <button class="btn" data-action="next" title="Mes siguiente" aria-label="Mes siguiente">›</button>
+      <button class="btn" data-action="today">Hoy</button>
       <span class="legend hide-mobile"><span>📝 ${pendingExams} examen(es)</span><span>✅ ${pendingTasks} tarea(s) pendientes</span></span>
       <span class="spacer"></span>
-      <label class="toggle"><input type="checkbox" id="toggle-classes" ${state.showClasses ? 'checked' : ''}> Clases</label>
-      <button class="btn btn-primary" data-action="newItem" data-type="task">+ Tarea</button>
-      <button class="btn btn-exam" data-action="newItem" data-type="exam">+ Examen</button>
+      <label class="toggle hide-mobile"><input type="checkbox" id="toggle-classes" ${state.showClasses ? 'checked' : ''}> Clases</label>
+      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">+ Tarea</button>
+      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">+ Examen</button>
     </div>
-    <div class="month-grid" style="grid-template-columns:repeat(${days.length},minmax(0,1fr));grid-template-rows:auto repeat(${weeks.length},minmax(0,1fr))">
+    ${mobile ? '<div class="scroll month-scroll">' : ''}
+    <div class="month-grid ${mobile ? 'compact' : ''}" style="grid-template-columns:repeat(${days.length},minmax(0,1fr));grid-template-rows:auto repeat(${weeks.length},minmax(0,1fr))">
       ${days.map((d) => `<div class="dow">${DAY_SHORT[d]}</div>`).join('')}
       ${cells.join('')}
-    </div>`;
+    </div>
+    ${mobile ? `<section class="agenda">${dayDetail(state.selectedDay, false)}</section></div>` : ''}`;
 }
 document.addEventListener('change', (e) => {
   if (e.target.id === 'toggle-classes') {
@@ -394,10 +428,10 @@ function weekView() {
       <h2>Horario semanal</h2>
       <span class="hint hide-mobile">Pulsa una celda para asignar una asignatura.</span>
       <span class="spacer"></span>
-      <button class="btn" data-action="goto" data-view="settings">⚙️ Tramos y días</button>
-      <button class="btn" data-action="goto" data-view="subjects">📘 Asignaturas</button>
+      <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">⚙️<span class="long"> Tramos y días</span></button>
+      <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">📘<span class="long"> Asignaturas</span></button>
     </div>
-    <div class="tt-grid" style="grid-template-columns:minmax(48px,80px) repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${html}</div>`;
+    <div class="tt-grid" style="grid-template-columns:${isMobile() ? '40px' : 'minmax(48px,80px)'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${html}</div>`;
 }
 
 /* ============================================================
@@ -448,7 +482,7 @@ function itemsView() {
     .map(([title, items, cls]) => `<div class="group-title ${cls || ''}">${title} <span>(${items.length})</span></div>${items.map(itemCard).join('')}`)
     .join('');
   return `
-    <div class="toolbar">
+    <div class="toolbar items-toolbar">
       <div class="segmented" id="type-filter">
         ${[['all', 'Todo'], ['task', 'Tareas'], ['exam', 'Exámenes']].map(([v, l]) => `<button data-type="${v}" class="${f.type === v ? 'active' : ''}">${l}</button>`).join('')}
       </div>
@@ -456,12 +490,13 @@ function itemsView() {
         <option value="">Todas las asignaturas</option>
         ${state.subjects.map((s) => `<option value="${s.id}" ${String(s.id) === f.subject ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
       </select>
-      <label class="toggle"><input type="checkbox" id="show-done" ${f.showDone ? 'checked' : ''}> Mostrar completadas</label>
+      <label class="toggle"><input type="checkbox" id="show-done" ${f.showDone ? 'checked' : ''}> <span class="long">Mostrar completadas</span><span class="short">Hechas</span></label>
       <span class="spacer"></span>
-      <button class="btn btn-primary" data-action="newItem" data-type="task">+ Tarea</button>
-      <button class="btn btn-exam" data-action="newItem" data-type="exam">+ Examen</button>
+      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">+ Tarea</button>
+      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">+ Examen</button>
     </div>
-    <div class="scroll">${body || `<div class="empty">🎉 No hay nada pendiente${f.type !== 'all' || f.subject ? ' con estos filtros' : ''}.</div>`}</div>`;
+    <div class="scroll">${body || `<div class="empty">🎉 No hay nada pendiente${f.type !== 'all' || f.subject ? ' con estos filtros' : ''}.</div>`}</div>
+    <button class="fab show-mobile" data-action="newItem" data-type="task" aria-label="Añadir tarea o examen">+</button>`;
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest('#type-filter button');
@@ -481,7 +516,7 @@ function subjectsView() {
     <div class="toolbar">
       <h2>Asignaturas</h2>
       <span class="spacer"></span>
-      <button class="btn btn-primary" data-action="newSubject">+ Nueva asignatura</button>
+      <button class="btn btn-primary" data-action="newSubject">+ <span class="long">Nueva asignatura</span><span class="short">Nueva</span></button>
     </div>
     <div class="scroll">
       ${state.subjects.length ? `<div class="subjects-grid">${state.subjects.map((s) => `
@@ -687,13 +722,12 @@ function closeModal() {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#modal-root').innerHTML) closeModal(); });
 
 /** Detalle de un día: clases + tareas/exámenes. */
-function openDayModal(key) {
-  const date = parseKey(key);
-  const render = () => {
+function dayDetail(key, inModal) {
+    const date = parseKey(key);
     const classes = classesOn(date.getDay());
     const items = state.items.filter((i) => dateKey(new Date(i.due_at)) === key);
     return `
-      <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2><button class="icon-btn" data-close>✕</button></div>
+      <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? '<button class="icon-btn" data-close>✕</button>' : ''}</div>
       <div class="group-title" style="margin-top:0">Clases</div>
       ${classes.length ? `<div class="day-classes">${classes.map(({ slot, subject, entry }) => `
         <div class="day-class" style="--c:${subject.color}">
@@ -706,7 +740,10 @@ function openDayModal(key) {
         <button class="btn btn-primary" data-action="newItem" data-type="task" data-date="${key}">+ Tarea</button>
         <button class="btn btn-exam" data-action="newItem" data-type="exam" data-date="${key}">+ Examen</button>
       </div>`;
-  };
+}
+
+function openDayModal(key) {
+  const render = () => dayDetail(key, true);
   openModal(render(), (root) => bindViewEvents(root), () => {
     const modal = $('#modal-root .modal');
     if (modal) modal.innerHTML = render();
