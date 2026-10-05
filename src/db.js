@@ -171,6 +171,23 @@ const MYSQL_SCHEMA = [
   ) ${TABLE_OPTS}`,
 ];
 
+/*
+ * Columnas añadidas después de la primera versión. Se crean al arrancar si faltan,
+ * así las bases de datos que ya existen (por ejemplo, la de Hostinger) se actualizan solas.
+ */
+const MIGRATIONS = [
+  "ALTER TABLE users ADD COLUMN tt_background VARCHAR(20) NOT NULL DEFAULT 'rayas'",
+];
+async function migrate(api) {
+  for (const sql of MIGRATIONS) {
+    try {
+      await api.run(sql);
+    } catch (err) {
+      if (!/duplicate column/i.test(err.message)) throw err;
+    }
+  }
+}
+
 /** Lee la configuración de la base de datos de las variables de entorno. */
 export function dbConfigFromEnv(env = process.env) {
   const url = env.DATABASE_URL || env.MYSQL_URL;
@@ -232,6 +249,7 @@ async function openSqlite(file) {
       db.close();
     },
   };
+  await migrate(api);
   return api;
 }
 
@@ -278,8 +296,11 @@ async function openMysql(cfg) {
   };
   api.close = () => pool.end();
   for (const stmt of MYSQL_SCHEMA) await pool.query(stmt);
+  await migrate(api);
   return api;
 }
+
+export const TT_BACKGROUNDS = ['rayas', 'rayas-rosa', 'cuadricula', 'puntos', 'lisa', 'arena', 'menta', 'lavanda', 'cielo', 'noche'];
 
 export const DEFAULT_SLOTS = [
   ['08:00', '08:55', '1ª hora', 0],

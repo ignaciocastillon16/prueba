@@ -81,6 +81,9 @@ test('ajustes: días visibles, tramos y horario semanal', async () => {
   const s = await c('PUT', '/me/settings', { visible_days: [6, 1, 1, 3], digest_hour: 8, daily_digest: true });
   assert.deepEqual(s.body.user.visible_days, [1, 3, 6]);
   assert.equal(s.body.user.daily_digest, true);
+  assert.equal(s.body.user.tt_background, 'rayas');
+  assert.equal((await c('PUT', '/me/settings', { tt_background: 'menta' })).body.user.tt_background, 'menta');
+  assert.equal((await c('PUT', '/me/settings', { tt_background: 'inventado' })).status, 400);
 
   assert.equal((await c('POST', '/slots', { start_time: '15:00', end_time: '14:00' })).status, 400);
   const slots = (await c('POST', '/slots', { start_time: '14:00', end_time: '14:55', label: '7ª' })).body;

@@ -45,6 +45,7 @@ const ICONS = {
   alert: '<path d="M10.3 4.6 3 17.5A2 2 0 0 0 4.7 20.5h14.6a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 17h.01"/>',
   logout: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="M9.5 16 5.5 12l4-4M5.5 12H15"/>',
   exam: '<path d="M7 3h7.5L19 7.5V21H7Z"/><path d="M14 3v5h5M10 12.5h5.5M10 16.5h5.5"/>',
+  palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.7-1.6h2.1a4 4 0 0 0 4-4C20.5 6.6 16.7 3.5 12 3.5Z"/><circle cx="7.8" cy="11.2" r="1.1"/><circle cx="10" cy="7.6" r="1.1"/><circle cx="14.6" cy="7.6" r="1.1"/>',
 };
 const icon = (name, cls = '') =>
   `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -264,6 +265,7 @@ function renderView() {
   const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
   el.innerHTML = { month: monthView, week: weekView, items: itemsView, subjects: subjectsView, settings: settingsView }[view]();
   if (view === 'settings') bindSettings(el);
+  if (view === 'week') fitTimetable(el);
   const newScroll = $('.scroll', el);
   if (newScroll && el.dataset.lastView === view) newScroll.scrollTop = scrollTop;
   el.dataset.lastView = view;
@@ -297,7 +299,7 @@ function bindViewEvents(root) {
     const cell = t.closest('.day-cell');
     if (cell) return isMobile() ? selectDay(cell.dataset.date) : openDayModal(cell.dataset.date);
     const tt = t.closest('.tt-cell');
-    if (tt) return openSlotModal(Number(tt.dataset.slot), Number(tt.dataset.day));
+    if (tt) return openSlotModal(tt.dataset.slots.split(',').map(Number), Number(tt.dataset.day));
   });
 }
 
@@ -330,6 +332,7 @@ const ACTIONS = {
     }
   },
   goto: (d) => { location.hash = d.view; },
+  pickBackground: () => openBackgroundModal(),
 };
 
 /* ============================================================
@@ -439,47 +442,144 @@ document.addEventListener('change', (e) => {
 /* ============================================================
    Horario semanal
    ============================================================ */
+const TT_BACKGROUNDS = [
+  ['rayas', 'Rayas'], ['rayas-rosa', 'Rayas rosa'], ['cuadricula', 'Cuadrícula'], ['puntos', 'Puntos'], ['lisa', 'Blanco'],
+  ['arena', 'Arena'], ['menta', 'Menta'], ['lavanda', 'Lavanda'], ['cielo', 'Cielo'], ['noche', 'Noche'],
+];
+
+/** Clases de un día agrupadas: las horas seguidas de la misma asignatura y aula forman un solo bloque. */
+function dayBlocks(day) {
+  const blocks = [];
+  const slots = state.slots;
+  for (let i = 0; i < slots.length; ) {
+    if (slots[i].is_break) { i++; continue; }
+    const at = (k) => {
+      const entry = state.schedule.find((e) => e.slot_id === slots[k].id && e.day === day);
+      const subject = entry && subjectById(entry.subject_id);
+      return subject ? { entry, subject, room: entry.room_override || subject.room } : null;
+    };
+    const first = at(i);
+    let k = i + 1;
+    if (first) {
+      while (k < slots.length && !slots[k].is_break) {
+        const next = at(k);
+        if (!next || next.subject.id !== first.subject.id || next.room !== first.room) break;
+        k++;
+      }
+    }
+    blocks.push({ row: i, span: k - i, slots: slots.slice(i, k), ...(first || {}) });
+    i = k;
+  }
+  return blocks;
+}
+
 function weekView() {
   const days = visibleDays();
   if (!state.slots.length) {
-    return `<div class="empty card">No tienes tramos horarios. <button class="btn btn-primary" data-action="goto" data-view="settings">Configurar tramos</button></div>`;
+    return `<div class="empty card"><strong>Aún no hay tramos horarios</strong><p>Define primero las horas de clase.</p><button class="btn btn-primary" data-action="goto" data-view="settings">Configurar tramos</button></div>`;
   }
   const now = new Date();
   const nowTime = timeOf(now);
   const todayDow = now.getDay();
-  const rows = state.slots.map((s) => `minmax(0,${s.is_break ? 0.5 : 1}fr)`).join(' ');
-  let html = `<div></div>${days.map((d) => `<div class="tt-head ${d === todayDow ? 'today' : ''}"><span class="long">${DAY_LONG[d]}</span><span class="short">${DAY_SHORT[d]}</span></div>`).join('')}`;
-  for (const slot of state.slots) {
-    html += `<div class="tt-time"><b>${slot.start_time}</b><span>${slot.end_time}</span>${slot.label && !slot.is_break ? `<span class="hide-mobile">${esc(slot.label)}</span>` : ''}</div>`;
+  let cells = '<div class="tt-corner" style="grid-area:1 / 1"></div>';
+  days.forEach((d, j) => {
+    cells += `<div class="tt-head ${d === todayDow ? 'today' : ''}" style="grid-area:1 / ${j + 2}"><span class="long">${DAY_LONG[d]}</span><span class="short">${DAY_SHORT[d]}</span></div>`;
+  });
+  let number = 0;
+  state.slots.forEach((slot, i) => {
+    const row = i + 2;
+    const range = `${slot.start_time}–${slot.end_time}`;
     if (slot.is_break) {
-      html += `<div class="tt-break" style="grid-column:2 / span ${days.length}">${icon('cup')}${esc(slot.label || 'Descanso')}</div>`;
-      continue;
+      cells += `<div class="tt-time brk" style="grid-area:${row} / 1" title="${range}">${icon('cup')}</div>`;
+      days.forEach((d, j) => { cells += `<div class="tt-break" style="grid-area:${row} / ${j + 2}">${esc(slot.label || 'Descanso')}</div>`; });
+      return;
     }
-    for (const d of days) {
-      const entry = state.schedule.find((e) => e.slot_id === slot.id && e.day === d);
-      const s = entry && subjectById(entry.subject_id);
-      const isNow = d === todayDow && nowTime >= slot.start_time && nowTime < slot.end_time;
-      if (s) {
-        const room = entry.room_override || s.room;
-        html += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}" style="--c:${s.color}" title="${esc(`${s.name}${room ? ` · Aula ${room}` : ''}${s.teacher ? ` · ${s.teacher}` : ''}`)}">
-          <div class="n"><span class="long">${esc(s.name)}</span><span class="short">${esc(shortName(s))}</span></div>
-          ${room ? `<div class="d">${icon('pin')}${esc(room)}</div>` : ''}
-          ${s.teacher ? `<div class="d">${icon('user')}${esc(s.teacher)}</div>` : ''}
+    number += 1;
+    // El número sale de la etiqueta del tramo («2», «2ª hora»…); si no tiene, se numera en orden.
+    const shown = slot.label.match(/\d+/)?.[0] ?? number;
+    cells += `<div class="tt-time" style="grid-area:${row} / 1" title="${esc(range + (slot.label ? ` · ${slot.label}` : ''))}"><span class="t">${slot.start_time}</span><b>${shown}</b></div>`;
+  });
+  days.forEach((d, j) => {
+    for (const b of dayBlocks(d)) {
+      const startT = b.slots[0].start_time;
+      const endT = b.slots[b.slots.length - 1].end_time;
+      const isNow = d === todayDow && nowTime >= startT && nowTime < endT;
+      const area = `grid-area:${b.row + 2} / ${j + 2} / span ${b.span} / span 1`;
+      const ids = b.slots.map((x) => x.id).join(',');
+      if (b.subject) {
+        const s = b.subject;
+        const tip = [s.name, `${startT}–${endT}`, b.room && `Aula ${b.room}`, s.teacher].filter(Boolean).join(' · ');
+        cells += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slots="${ids}" data-day="${d}" style="${area};--c:${s.color};--ink:${textOn(s.color)}" title="${esc(tip)}">
+          <div class="tt-name"><span>${esc(s.name)}</span></div>
+          ${b.room ? `<div class="tt-room">${esc(b.room)}</div>` : ''}
         </div>`;
       } else {
-        html += `<div class="tt-cell ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}"><div class="plus">${icon('plus')}</div></div>`;
+        cells += `<div class="tt-cell ${isNow ? 'now' : ''}" data-slots="${ids}" data-day="${d}" style="${area}" title="${esc(`${DAY_LONG[d]} ${startT}–${endT}`)}"><span class="plus">${icon('plus')}</span></div>`;
       }
     }
-  }
+  });
+  const rows = state.slots.map((x) => (x.is_break ? 'minmax(0,.6fr)' : 'minmax(0,1fr)')).join(' ');
+  const bg = state.user.tt_background || 'rayas';
   return `
     <div class="toolbar">
       <h2>Horario semanal</h2>
-      <span class="hint hide-mobile">Pulsa una celda para cambiar la asignatura.</span>
+      <span class="hint hide-mobile">Pulsa una clase para cambiarla.</span>
       <span class="spacer"></span>
+      <button class="btn" data-action="pickBackground" title="Fondo del horario">${icon('palette')}<span class="long">Fondo</span></button>
       <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">${icon('sliders')}<span class="long">Tramos y días</span></button>
       <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">${icon('book')}<span class="long">Asignaturas</span></button>
     </div>
-    <div class="tt-grid" style="grid-template-columns:${isMobile() ? '40px' : 'minmax(48px,80px)'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${html}</div>`;
+    <div class="tt-board bg-${bg}">
+      <div class="tt-grid" style="grid-template-columns:${isMobile() ? '38px' : '68px'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${cells}</div>
+    </div>`;
+}
+
+/** Ajusta el tamaño de letra de cada clase para que el nombre completo quepa en su casilla. */
+function fitTimetable(root = $('#view')) {
+  for (const box of $$('.tt-name', root)) {
+    const span = box.firstElementChild;
+    box.classList.remove('break-any');
+    box.style.fontSize = '';
+    let size = parseFloat(getComputedStyle(box).fontSize);
+    const overflows = () => span.offsetHeight > box.clientHeight + 1 || span.scrollWidth > span.clientWidth + 1;
+    const shrinkTo = (min) => {
+      while (size > min && overflows()) {
+        size -= 0.5;
+        box.style.fontSize = `${size}px`;
+      }
+    };
+    // Primero se reduce la letra hasta un tamaño cómodo; si aún no cabe, se parten las palabras largas.
+    shrinkTo(isMobile() ? 10.5 : 11);
+    if (overflows()) {
+      box.classList.add('break-any');
+      shrinkTo(8);
+    }
+  }
+}
+let fitTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => { if (state.view === 'week') fitTimetable(); }, 120);
+});
+
+function openBackgroundModal() {
+  const current = state.user.tt_background || 'rayas';
+  openModal(`
+    <div class="modal-head"><h2>Fondo del horario</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+    <div class="bg-options">
+      ${TT_BACKGROUNDS.map(([key, label]) => `<button type="button" class="bg-option ${key === current ? 'active' : ''}" data-bg="${key}"><span class="bg-swatch bg-${key}"></span><span>${label}</span></button>`).join('')}
+    </div>`, (root) => {
+    $('.bg-options', root).onclick = async (e) => {
+      const b = e.target.closest('[data-bg]');
+      if (!b) return;
+      const r = await attempt(() => api('PUT', '/me/settings', { tt_background: b.dataset.bg }));
+      if (r) {
+        state.user = r.user;
+        closeModal();
+        renderView();
+      }
+    };
+  });
 }
 
 /* ============================================================
@@ -645,7 +745,7 @@ function settingsView() {
 
     <section class="card">
       <h2>Tramos horarios</h2>
-      <p class="hint">Define las horas de clase y los descansos. Los cambios se guardan automáticamente.</p>
+      <p class="hint">Define las horas de clase y los descansos. Cuando termines, pulsa «Guardar cambios».</p>
       <div id="slots">${state.slots.map((s) => `
         <div class="slot-row" data-slot="${s.id}">
           <input type="time" name="start_time" value="${s.start_time}" aria-label="Inicio">
@@ -654,6 +754,11 @@ function settingsView() {
           <label class="brk"><input type="checkbox" name="is_break" ${s.is_break ? 'checked' : ''}> Descanso</label>
           <button class="icon-btn" data-del-slot="${s.id}" title="Eliminar tramo" aria-label="Eliminar tramo">${icon('trash')}</button>
         </div>`).join('') || '<p class="hint">No hay tramos.</p>'}</div>
+      <div class="slots-save" id="slots-save" hidden>
+        <span class="hint">Tienes cambios sin guardar.</span>
+        <button class="btn" id="discard-slots">Descartar</button>
+        <button class="btn btn-primary" id="save-slots">Guardar cambios</button>
+      </div>
       <button class="btn" id="add-slot">${icon('plus')}Añadir tramo</button>
     </section>
 
@@ -699,26 +804,54 @@ function bindSettings(root) {
     if (!(await saveSettings({ visible_days: days }))) renderView();
     else $$('.days-pick label', root).forEach((l) => l.classList.toggle('on', $('input', l).checked));
   };
-  $('#slots', root).onchange = async (e) => {
+  // Los tramos no se guardan en cada cambio: en el móvil eso cerraba el selector de hora
+  // a mitad de escribir. Se marcan como pendientes y se guardan con el botón.
+  const markDirty = (e) => {
     const row = e.target.closest('.slot-row');
     if (!row) return;
-    const data = {
-      start_time: $('[name=start_time]', row).value,
-      end_time: $('[name=end_time]', row).value,
-      label: $('[name=label]', row).value,
-      is_break: $('[name=is_break]', row).checked,
-    };
-    const slots = await attempt(() => api('PUT', `/slots/${row.dataset.slot}`, data), 'Tramo guardado');
-    if (slots) state.slots = slots;
-    renderView();
+    row.classList.add('dirty');
+    $('#slots-save', root).hidden = false;
   };
+  $('#slots', root).addEventListener('input', markDirty);
+  $('#slots', root).addEventListener('change', markDirty);
+  const saveSlots = async () => {
+    let slots = null;
+    for (const row of $$('.slot-row.dirty', root)) {
+      const data = {
+        start_time: $('[name=start_time]', row).value,
+        end_time: $('[name=end_time]', row).value,
+        label: $('[name=label]', row).value,
+        is_break: $('[name=is_break]', row).checked,
+      };
+      try {
+        slots = await api('PUT', `/slots/${row.dataset.slot}`, data);
+        row.classList.remove('dirty');
+      } catch (err) {
+        if (slots) state.slots = slots;
+        toast(`${data.start_time || '--:--'}–${data.end_time || '--:--'}: ${err.message}`, true);
+        return false;
+      }
+    }
+    if (slots) state.slots = slots;
+    return true;
+  };
+  const savePending = async () => !$$('.slot-row.dirty', root).length || saveSlots();
+  $('#save-slots', root).onclick = async () => {
+    if (await saveSlots()) {
+      toast('Tramos guardados');
+      renderView();
+    }
+  };
+  $('#discard-slots', root).onclick = () => renderView();
   $('#slots', root).onclick = async (e) => {
     const b = e.target.closest('[data-del-slot]');
     if (!b || !confirm('¿Eliminar este tramo? Se quitarán las clases asignadas a él.')) return;
+    if (!(await savePending())) return;
     const slots = await attempt(() => api('DELETE', `/slots/${b.dataset.delSlot}`), 'Tramo eliminado');
     if (slots) { state.slots = slots; state.schedule = await api('GET', '/schedule'); renderView(); }
   };
   $('#add-slot', root).onclick = async () => {
+    if (!(await savePending())) return;
     const last = state.slots[state.slots.length - 1];
     let start = last ? last.end_time : '08:00';
     const [h, m] = start.split(':').map(Number);
@@ -803,9 +936,10 @@ function openDayModal(key) {
 }
 
 /** Asignar asignatura a una celda del horario semanal. */
-function openSlotModal(slotId, day) {
-  const slot = state.slots.find((s) => s.id === slotId);
-  const entry = state.schedule.find((e) => e.slot_id === slotId && e.day === day);
+function openSlotModal(slotIds, day) {
+  const slots = slotIds.map((id) => state.slots.find((s) => s.id === id));
+  const slot = { start_time: slots[0].start_time, end_time: slots[slots.length - 1].end_time };
+  const entry = state.schedule.find((e) => e.slot_id === slotIds[0] && e.day === day);
   let selected = entry ? entry.subject_id : null;
   if (!state.subjects.length) {
     openModal(`<div class="modal-head"><h2>Primero crea tus asignaturas</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
@@ -822,6 +956,7 @@ function openSlotModal(slotId, day) {
         <button type="button" class="none ${selected === null ? 'active' : ''}" data-sid="">— Libre —</button>
         ${state.subjects.map((s) => `<button type="button" data-sid="${s.id}" class="${selected === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
       </div>
+      ${slots.length > 1 ? `<p class="hint" style="margin:-4px 0 12px">Son ${slots.length} horas seguidas. Los cambios se aplican a todas.</p>` : ''}
       <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" maxlength="60" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
       <div class="error" id="form-error"></div>
       <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">Guardar</button></div>
@@ -844,7 +979,9 @@ function openSlotModal(slotId, day) {
     form.onsubmit = async (e) => {
       e.preventDefault();
       try {
-        state.schedule = await api('PUT', '/schedule', { slot_id: slotId, day, subject_id: selected, room_override: roomInput.value });
+        for (const id of slotIds) {
+          state.schedule = await api('PUT', '/schedule', { slot_id: id, day, subject_id: selected, room_override: roomInput.value });
+        }
         closeModal();
         refresh();
       } catch (err) {
@@ -1006,6 +1143,9 @@ async function start() {
   renderShell();
   renderView();
 }
+
+// Cuando terminan de cargar las fuentes, se reajustan los nombres del horario.
+document.fonts?.ready.then(() => { if (state.view === 'week') fitTimetable(); });
 
 (async () => {
   try {

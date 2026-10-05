@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { DEFAULT_SLOTS } from './db.js';
+import { DEFAULT_SLOTS, TT_BACKGROUNDS } from './db.js';
 import { ITEM_SELECT, attachChecklists, serializeItem } from './items.js';
 import { testEmail } from './emails.js';
 
@@ -83,6 +83,7 @@ function publicUser(u) {
     default_reminder_minutes: u.default_reminder_minutes,
     daily_digest: Boolean(u.daily_digest),
     digest_hour: u.digest_hour,
+    tt_background: u.tt_background || 'rayas',
   };
 }
 
@@ -225,7 +226,12 @@ export function createApi({ db, mailer, appUrl = '' }) {
           : u.default_reminder_minutes,
       daily_digest: b.daily_digest !== undefined ? (b.daily_digest ? 1 : 0) : u.daily_digest,
       digest_hour: b.digest_hour !== undefined ? int(b.digest_hour, 'La hora del resumen', 0, 23) : u.digest_hour,
+      tt_background: u.tt_background || 'rayas',
     };
+    if (b.tt_background !== undefined) {
+      if (!TT_BACKGROUNDS.includes(b.tt_background)) throw bad('El fondo elegido no es válido');
+      next.tt_background = b.tt_background;
+    }
     if (b.visible_days !== undefined) {
       if (!Array.isArray(b.visible_days)) throw bad('Los días visibles no son válidos');
       const days = [...new Set(b.visible_days.map((d) => int(d, 'Día', 0, 6)))].sort();
@@ -234,7 +240,7 @@ export function createApi({ db, mailer, appUrl = '' }) {
     }
     const lastDigest = next.digest_hour !== u.digest_hour ? null : u.last_digest_date;
     (await db.run(`UPDATE users SET name = ?, timezone = ?, visible_days = ?, email_notifications = ?, default_reminder_minutes = ?,
-       daily_digest = ?, digest_hour = ?, last_digest_date = ? WHERE id = ?`, next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, lastDigest, u.id));
+       daily_digest = ?, digest_hour = ?, last_digest_date = ?, tt_background = ? WHERE id = ?`, next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, lastDigest, next.tt_background, u.id));
     res.json({ user: publicUser((await db.get('SELECT * FROM users WHERE id = ?', u.id))) });
   });
 
