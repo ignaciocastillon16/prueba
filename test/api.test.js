@@ -1,12 +1,21 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../src/db.js';
+import { openDb, dbConfigFromEnv } from '../src/db.js';
 import { createApp } from '../src/server.js';
 import { createScheduler } from '../src/scheduler.js';
 
 const sent = [];
 const mailer = { configured: true, async send(msg) { sent.push(msg); } };
-const db = openDb(':memory:');
+// Por defecto se prueba con SQLite en memoria. Con TEST_DATABASE_URL=mysql://… se prueba contra MySQL.
+const testUrl = process.env.TEST_DATABASE_URL;
+if (testUrl) {
+  const { default: mysql } = await import('mysql2/promise');
+  const conn = await mysql.createConnection(testUrl);
+  await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+  for (const t of ['checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
+  await conn.end();
+}
+const db = await openDb(testUrl ? dbConfigFromEnv({ DATABASE_URL: testUrl }) : { file: ':memory:' });
 let server;
 let base;
 
@@ -15,7 +24,10 @@ before(async () => {
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => server.close());
+after(async () => {
+  server.close();
+  await db.close();
+});
 
 function client() {
   let cookie = '';
@@ -179,4 +191,10 @@ test('correo de prueba', async () => {
   const r = await c('POST', '/me/test-email');
   assert.equal(r.status, 200);
   assert.equal(sent[0].to, 'sol@x.com');
+});
+
+test('ruta de salud', async () => {
+  const res = await fetch(base + '/api/health');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
 });

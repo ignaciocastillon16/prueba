@@ -16,20 +16,20 @@ export function createScheduler({ db, mailer, appUrl = '', logger = console }) {
 
   async function sendReminders(now) {
     const nowIso = now.toISOString();
-    const candidates = db
-      .prepare(
+    const candidates = (
+      await db.all(
         `${ITEM_SELECT} JOIN users u ON u.id = i.user_id
          WHERE i.done = 0 AND i.reminder_minutes IS NOT NULL AND i.reminder_sent_at IS NULL
-           AND u.email_notifications = 1 AND i.due_at > ?`
+           AND u.email_notifications = 1 AND i.due_at > ?`,
+        nowIso
       )
-      .all(nowIso)
-      .filter((i) => Date.parse(i.due_at) - i.reminder_minutes * 60000 <= now.getTime());
-    attachChecklists(db, candidates);
+    ).filter((i) => Date.parse(i.due_at) - i.reminder_minutes * 60000 <= now.getTime());
+    await attachChecklists(db, candidates);
     for (const item of candidates) {
-      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(item.user_id);
+      const user = await db.get('SELECT * FROM users WHERE id = ?', item.user_id);
       try {
         await mailer.send({ to: user.email, ...reminderEmail(item, user, appUrl, now) });
-        db.prepare('UPDATE items SET reminder_sent_at = ? WHERE id = ?').run(nowIso, item.id);
+        await db.run('UPDATE items SET reminder_sent_at = ? WHERE id = ?', nowIso, item.id);
       } catch (err) {
         logger.error(`No se pudo enviar el aviso de la tarea ${item.id}:`, err.message);
       }
@@ -37,19 +37,19 @@ export function createScheduler({ db, mailer, appUrl = '', logger = console }) {
   }
 
   async function sendDigests(now) {
-    const users = db.prepare('SELECT * FROM users WHERE daily_digest = 1 AND email_notifications = 1').all();
+    const users = await db.all('SELECT * FROM users WHERE daily_digest = 1 AND email_notifications = 1');
     for (const user of users) {
       const { date, hour } = localParts(now, user.timezone);
       if (hour < user.digest_hour || user.last_digest_date === date) continue;
       const from = new Date(now.getTime() - 7 * 86400000).toISOString();
       const to = new Date(now.getTime() + 7 * 86400000).toISOString();
-      const items = attachChecklists(
+      const items = await attachChecklists(
         db,
-        db.prepare(`${ITEM_SELECT} WHERE i.user_id = ? AND i.done = 0 AND i.due_at >= ? AND i.due_at <= ? ORDER BY i.due_at`).all(user.id, from, to)
+        await db.all(`${ITEM_SELECT} WHERE i.user_id = ? AND i.done = 0 AND i.due_at >= ? AND i.due_at <= ? ORDER BY i.due_at`, user.id, from, to)
       );
       try {
         if (items.length) await mailer.send({ to: user.email, ...digestEmail(items, user, appUrl, now) });
-        db.prepare('UPDATE users SET last_digest_date = ? WHERE id = ?').run(date, user.id);
+        await db.run('UPDATE users SET last_digest_date = ? WHERE id = ?', date, user.id);
       } catch (err) {
         logger.error(`No se pudo enviar el resumen diario a ${user.id}:`, err.message);
       }
@@ -60,7 +60,7 @@ export function createScheduler({ db, mailer, appUrl = '', logger = console }) {
     if (running) return;
     running = true;
     try {
-      db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.getTime());
+      await db.run('DELETE FROM sessions WHERE expires_at < ?', now.getTime());
       await sendReminders(now);
       await sendDigests(now);
     } catch (err) {

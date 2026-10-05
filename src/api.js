@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { tx, DEFAULT_SLOTS } from './db.js';
+import { DEFAULT_SLOTS } from './db.js';
 import { ITEM_SELECT, attachChecklists, serializeItem } from './items.js';
 import { testEmail } from './emails.js';
 
@@ -117,24 +117,28 @@ export function createApi({ db, mailer, appUrl = '' }) {
     next();
   });
   r.use(express.json({ limit: '200kb' }));
+
+  // Comprobación de estado para Render (y para mantener despierto el plan gratuito).
+  r.get('/health', async (req, res) => {
+    await db.get('SELECT 1 AS ok');
+    res.json({ ok: true });
+  });
   r.use((req, res, next) => {
     if (!req.body || typeof req.body !== 'object') req.body = {};
     next();
   });
 
-  function startSession(req, res, userId) {
+  async function startSession(req, res, userId) {
     const token = crypto.randomBytes(32).toString('hex');
-    db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(hashToken(token), userId, Date.now() + SESSION_MS);
+    (await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', hashToken(token), userId, Date.now() + SESSION_MS));
     res.cookie(COOKIE, token, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: SESSION_MS, path: '/' });
   }
 
-  r.use((req, res, next) => {
+  r.use(async (req, res, next) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (token) {
       req.sessionHash = hashToken(token);
-      req.user = db
-        .prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?')
-        .get(req.sessionHash, Date.now());
+      req.user = await db.get('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?', req.sessionHash, Date.now());
     }
     next();
   });
@@ -143,7 +147,7 @@ export function createApi({ db, mailer, appUrl = '' }) {
   r.post('/auth/register', async (req, res) => {
     if (!allowRegister(req.ip)) throw new HttpError(429, 'Demasiados registros. Inténtalo más tarde.');
     const name = str(req.body.name, 'El nombre', { max: 80, required: true });
-    const email = str(req.body.email, 'El correo', { max: 254, required: true }).toLowerCase();
+    const email = str(req.body.email, 'El correo', { max: 191, required: true }).toLowerCase();
     if (!EMAIL_RE.test(email)) throw bad('El correo no es válido');
     const password = typeof req.body.password === 'string' ? req.body.password : '';
     if (password.length < 8) throw bad('La contraseña debe tener al menos 8 caracteres');
@@ -156,30 +160,34 @@ export function createApi({ db, mailer, appUrl = '' }) {
         /* se usa la zona por defecto */
       }
     }
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo');
+    if ((await db.get('SELECT 1 FROM users WHERE email = ?', email))) throw new HttpError(409, 'Ya existe una cuenta con ese correo');
     const hash = await bcrypt.hash(password, 10);
-    const userId = tx(db, () => {
-      const { lastInsertRowid } = db.prepare('INSERT INTO users (name, email, password_hash, timezone) VALUES (?, ?, ?, ?)').run(name, email, hash, tz);
-      const ins = db.prepare('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)');
-      for (const s of DEFAULT_SLOTS) ins.run(lastInsertRowid, ...s);
-      return Number(lastInsertRowid);
+    const userId = await db.tx(async (t) => {
+      const { insertId } = await t.run(
+        'INSERT INTO users (name, email, password_hash, timezone, created_at) VALUES (?, ?, ?, ?, ?)',
+        name, email, hash, tz, new Date().toISOString()
+      );
+      for (const s of DEFAULT_SLOTS) {
+        await t.run('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)', insertId, ...s);
+      }
+      return insertId;
     });
-    startSession(req, res, userId);
-    res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(userId)) });
+    await startSession(req, res, userId);
+    res.status(201).json({ user: publicUser((await db.get('SELECT * FROM users WHERE id = ?', userId))) });
   });
 
   r.post('/auth/login', async (req, res) => {
     const email = str(req.body.email, 'El correo', { max: 254, required: true }).toLowerCase();
     const password = typeof req.body.password === 'string' ? req.body.password : '';
     if (!allowLogin(`${req.ip}|${email}`)) throw new HttpError(429, 'Demasiados intentos. Espera unos minutos.');
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = (await db.get('SELECT * FROM users WHERE email = ?', email));
     if (!user || !(await bcrypt.compare(password, user.password_hash))) throw new HttpError(401, 'Correo o contraseña incorrectos');
-    startSession(req, res, user.id);
+    await startSession(req, res, user.id);
     res.json({ user: publicUser(user) });
   });
 
-  r.post('/auth/logout', (req, res) => {
-    if (req.sessionHash) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
+  r.post('/auth/logout', async (req, res) => {
+    if (req.sessionHash) (await db.run('DELETE FROM sessions WHERE token_hash = ?', req.sessionHash));
     res.clearCookie(COOKIE, { path: '/' });
     res.status(204).end();
   });
@@ -189,19 +197,19 @@ export function createApi({ db, mailer, appUrl = '' }) {
   const uid = (req) => req.user.id;
 
   /* ---------- usuario y ajustes ---------- */
-  r.get('/me', (req, res) => res.json({ user: publicUser(req.user), mail_configured: mailer.configured }));
+  r.get('/me', async (req, res) => res.json({ user: publicUser(req.user), mail_configured: mailer.configured }));
 
-  r.get('/bootstrap', (req, res) => {
+  r.get('/bootstrap', async (req, res) => {
     res.json({
       user: publicUser(req.user),
       mail_configured: mailer.configured,
-      subjects: db.prepare('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY name COLLATE NOCASE').all(uid(req)),
-      slots: listSlots(uid(req)),
-      schedule: listSchedule(uid(req)),
+      subjects: (await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))),
+      slots: await listSlots(uid(req)),
+      schedule: await listSchedule(uid(req)),
     });
   });
 
-  r.put('/me/settings', (req, res) => {
+  r.put('/me/settings', async (req, res) => {
     const u = req.user;
     const b = req.body;
     const next = {
@@ -224,11 +232,10 @@ export function createApi({ db, mailer, appUrl = '' }) {
       if (!days.length) throw bad('Selecciona al menos un día de la semana');
       next.visible_days = JSON.stringify(days);
     }
-    db.prepare(
-      `UPDATE users SET name = ?, timezone = ?, visible_days = ?, email_notifications = ?, default_reminder_minutes = ?,
-       daily_digest = ?, digest_hour = ?, last_digest_date = CASE WHEN ? <> digest_hour THEN NULL ELSE last_digest_date END WHERE id = ?`
-    ).run(next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, next.digest_hour, u.id);
-    res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)) });
+    const lastDigest = next.digest_hour !== u.digest_hour ? null : u.last_digest_date;
+    (await db.run(`UPDATE users SET name = ?, timezone = ?, visible_days = ?, email_notifications = ?, default_reminder_minutes = ?,
+       daily_digest = ?, digest_hour = ?, last_digest_date = ? WHERE id = ?`, next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, lastDigest, u.id));
+    res.json({ user: publicUser((await db.get('SELECT * FROM users WHERE id = ?', u.id))) });
   });
 
   r.put('/me/password', async (req, res) => {
@@ -237,9 +244,9 @@ export function createApi({ db, mailer, appUrl = '' }) {
     if (!(await bcrypt.compare(current, req.user.password_hash))) throw bad('La contraseña actual no es correcta');
     if (password.length < 8 || password.length > 200) throw bad('La nueva contraseña debe tener al menos 8 caracteres');
     const hash = await bcrypt.hash(password, 10);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
+    (await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hash, req.user.id));
     // Cierra las demás sesiones abiertas.
-    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(req.user.id, req.sessionHash);
+    (await db.run('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?', req.user.id, req.sessionHash));
     res.status(204).end();
   });
 
@@ -263,35 +270,33 @@ export function createApi({ db, mailer, appUrl = '' }) {
       teacher: str(b.teacher, 'El profesor', { max: 80 }),
     };
   }
-  const getSubject = (userId, subjectId) =>
-    db.prepare('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE id = ? AND user_id = ?').get(subjectId, userId);
+  const getSubject = async (userId, subjectId) =>
+    (await db.get('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE id = ? AND user_id = ?', subjectId, userId));
 
-  r.get('/subjects', (req, res) => {
-    res.json(db.prepare('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY name COLLATE NOCASE').all(uid(req)));
+  r.get('/subjects', async (req, res) => {
+    res.json((await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))));
   });
-  r.post('/subjects', (req, res) => {
+  r.post('/subjects', async (req, res) => {
     const s = subjectInput(req.body);
-    const { lastInsertRowid } = db
-      .prepare('INSERT INTO subjects (user_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(uid(req), s.name, s.short_name, s.color, s.room, s.teacher);
-    res.status(201).json(getSubject(uid(req), lastInsertRowid));
+    const { insertId } = await db.run('INSERT INTO subjects (user_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?)', uid(req), s.name, s.short_name, s.color, s.room, s.teacher);
+    res.status(201).json(await getSubject(uid(req), insertId));
   });
-  r.put('/subjects/:id', (req, res) => {
-    const existing = getSubject(uid(req), id(req.params.id));
+  r.put('/subjects/:id', async (req, res) => {
+    const existing = await getSubject(uid(req), id(req.params.id));
     if (!existing) throw notFound('Asignatura');
     const s = subjectInput({ ...existing, ...req.body });
-    db.prepare('UPDATE subjects SET name = ?, short_name = ?, color = ?, room = ?, teacher = ? WHERE id = ?').run(s.name, s.short_name, s.color, s.room, s.teacher, existing.id);
-    res.json(getSubject(uid(req), existing.id));
+    (await db.run('UPDATE subjects SET name = ?, short_name = ?, color = ?, room = ?, teacher = ? WHERE id = ?', s.name, s.short_name, s.color, s.room, s.teacher, existing.id));
+    res.json(await getSubject(uid(req), existing.id));
   });
-  r.delete('/subjects/:id', (req, res) => {
-    const { changes } = db.prepare('DELETE FROM subjects WHERE id = ? AND user_id = ?').run(id(req.params.id), uid(req));
+  r.delete('/subjects/:id', async (req, res) => {
+    const { changes } = (await db.run('DELETE FROM subjects WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
     if (!changes) throw notFound('Asignatura');
     res.status(204).end();
   });
 
   /* ---------- tramos horarios ---------- */
-  const listSlots = (userId) =>
-    db.prepare('SELECT id, start_time, end_time, label, is_break FROM time_slots WHERE user_id = ? ORDER BY start_time, end_time').all(userId).map((s) => ({ ...s, is_break: Boolean(s.is_break) }));
+  const listSlots = async (userId) =>
+    (await db.all('SELECT id, start_time, end_time, label, is_break FROM time_slots WHERE user_id = ? ORDER BY start_time, end_time', userId)).map((s) => ({ ...s, is_break: Boolean(s.is_break) }));
   function slotInput(b) {
     const s = {
       start_time: time(b.start_time, 'La hora de inicio'),
@@ -302,53 +307,53 @@ export function createApi({ db, mailer, appUrl = '' }) {
     if (s.start_time >= s.end_time) throw bad('La hora de fin debe ser posterior a la de inicio');
     return s;
   }
-  r.get('/slots', (req, res) => res.json(listSlots(uid(req))));
-  r.post('/slots', (req, res) => {
+  r.get('/slots', async (req, res) => res.json(await listSlots(uid(req))));
+  r.post('/slots', async (req, res) => {
     const s = slotInput(req.body);
-    if (db.prepare('SELECT COUNT(*) AS n FROM time_slots WHERE user_id = ?').get(uid(req)).n >= 30) throw bad('Máximo 30 tramos horarios');
-    db.prepare('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)').run(uid(req), s.start_time, s.end_time, s.label, s.is_break);
-    res.status(201).json(listSlots(uid(req)));
+    if ((await db.get('SELECT COUNT(*) AS n FROM time_slots WHERE user_id = ?', uid(req))).n >= 30) throw bad('Máximo 30 tramos horarios');
+    (await db.run('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)', uid(req), s.start_time, s.end_time, s.label, s.is_break));
+    res.status(201).json(await listSlots(uid(req)));
   });
-  r.put('/slots/:id', (req, res) => {
-    const existing = db.prepare('SELECT * FROM time_slots WHERE id = ? AND user_id = ?').get(id(req.params.id), uid(req));
+  r.put('/slots/:id', async (req, res) => {
+    const existing = (await db.get('SELECT * FROM time_slots WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
     if (!existing) throw notFound('Tramo');
     const s = slotInput({ ...existing, ...req.body });
-    db.prepare('UPDATE time_slots SET start_time = ?, end_time = ?, label = ?, is_break = ? WHERE id = ?').run(s.start_time, s.end_time, s.label, s.is_break, existing.id);
-    res.json(listSlots(uid(req)));
+    (await db.run('UPDATE time_slots SET start_time = ?, end_time = ?, label = ?, is_break = ? WHERE id = ?', s.start_time, s.end_time, s.label, s.is_break, existing.id));
+    res.json(await listSlots(uid(req)));
   });
-  r.delete('/slots/:id', (req, res) => {
-    const { changes } = db.prepare('DELETE FROM time_slots WHERE id = ? AND user_id = ?').run(id(req.params.id), uid(req));
+  r.delete('/slots/:id', async (req, res) => {
+    const { changes } = (await db.run('DELETE FROM time_slots WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
     if (!changes) throw notFound('Tramo');
-    res.json(listSlots(uid(req)));
+    res.json(await listSlots(uid(req)));
   });
 
   /* ---------- horario semanal ---------- */
-  const listSchedule = (userId) => db.prepare('SELECT id, subject_id, slot_id, day, room_override FROM schedule_entries WHERE user_id = ?').all(userId);
-  r.get('/schedule', (req, res) => res.json(listSchedule(uid(req))));
-  r.put('/schedule', (req, res) => {
+  const listSchedule = async (userId) => (await db.all('SELECT id, subject_id, slot_id, day, room_override FROM schedule_entries WHERE user_id = ?', userId));
+  r.get('/schedule', async (req, res) => res.json(await listSchedule(uid(req))));
+  r.put('/schedule', async (req, res) => {
     const day = int(req.body.day, 'Día', 0, 6);
     const slotId = id(req.body.slot_id);
-    if (!db.prepare('SELECT 1 FROM time_slots WHERE id = ? AND user_id = ?').get(slotId, uid(req))) throw notFound('Tramo');
+    if (!(await db.get('SELECT 1 FROM time_slots WHERE id = ? AND user_id = ?', slotId, uid(req)))) throw notFound('Tramo');
     if (req.body.subject_id === null || req.body.subject_id === undefined || req.body.subject_id === '') {
-      db.prepare('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?').run(uid(req), slotId, day);
+      (await db.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slotId, day));
     } else {
       const subjectId = id(req.body.subject_id);
-      if (!getSubject(uid(req), subjectId)) throw notFound('Asignatura');
+      if (!await getSubject(uid(req), subjectId)) throw notFound('Asignatura');
       const room = str(req.body.room_override, 'El aula', { max: 60 });
-      db.prepare(
-        `INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (user_id, slot_id, day) DO UPDATE SET subject_id = excluded.subject_id, room_override = excluded.room_override`
-      ).run(uid(req), subjectId, slotId, day, room);
+      await db.tx(async (t) => {
+        await t.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slotId, day);
+        await t.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)', uid(req), subjectId, slotId, day, room);
+      });
     }
-    res.json(listSchedule(uid(req)));
+    res.json(await listSchedule(uid(req)));
   });
 
   /* ---------- tareas y exámenes ---------- */
-  function loadItem(userId, itemId) {
-    const item = db.prepare(`${ITEM_SELECT} WHERE i.id = ? AND i.user_id = ?`).get(itemId, userId);
-    return item ? serializeItem(attachChecklists(db, [item])[0]) : null;
+  async function loadItem(userId, itemId) {
+    const item = (await db.get(`${ITEM_SELECT} WHERE i.id = ? AND i.user_id = ?`, itemId, userId));
+    return item ? serializeItem((await attachChecklists(db, [item]))[0]) : null;
   }
-  function itemInput(userId, b) {
+  async function itemInput(userId, b) {
     const item = {
       type: b.type === 'exam' ? 'exam' : b.type === 'task' ? 'task' : null,
       title: str(b.title, 'El título', { max: 150, required: true }),
@@ -359,7 +364,7 @@ export function createApi({ db, mailer, appUrl = '' }) {
       done: b.done ? 1 : 0,
     };
     if (!item.type) throw bad('El tipo debe ser tarea o examen');
-    if (item.subject_id && !getSubject(userId, item.subject_id)) throw notFound('Asignatura');
+    if (item.subject_id && !await getSubject(userId, item.subject_id)) throw notFound('Asignatura');
     return item;
   }
   function checklistInput(list) {
@@ -369,13 +374,14 @@ export function createApi({ db, mailer, appUrl = '' }) {
       .map((c) => ({ text: str(c?.text, 'El elemento de la lista', { max: 200 }), done: c?.done ? 1 : 0 }))
       .filter((c) => c.text);
   }
-  function saveChecklist(itemId, list) {
-    db.prepare('DELETE FROM checklist_items WHERE item_id = ?').run(itemId);
-    const ins = db.prepare('INSERT INTO checklist_items (item_id, text, done, position) VALUES (?, ?, ?, ?)');
-    list.forEach((c, i) => ins.run(itemId, c.text, c.done, i));
+  async function saveChecklist(t, itemId, list) {
+    await t.run('DELETE FROM checklist_items WHERE item_id = ?', itemId);
+    for (const [i, c] of list.entries()) {
+      await t.run('INSERT INTO checklist_items (item_id, text, done, position) VALUES (?, ?, ?, ?)', itemId, c.text, c.done, i);
+    }
   }
 
-  r.get('/items', (req, res) => {
+  r.get('/items', async (req, res) => {
     const where = ['i.user_id = ?'];
     const params = [uid(req)];
     if (req.query.from) (where.push('i.due_at >= ?'), params.push(isoDate(req.query.from, 'Desde')));
@@ -383,55 +389,56 @@ export function createApi({ db, mailer, appUrl = '' }) {
     if (req.query.status === 'pending') where.push('i.done = 0');
     if (req.query.status === 'done') where.push('i.done = 1');
     if (req.query.type === 'task' || req.query.type === 'exam') (where.push('i.type = ?'), params.push(req.query.type));
-    const items = db.prepare(`${ITEM_SELECT} WHERE ${where.join(' AND ')} ORDER BY i.due_at, i.id`).all(...params);
-    res.json(attachChecklists(db, items).map(serializeItem));
+    const items = (await db.all(`${ITEM_SELECT} WHERE ${where.join(' AND ')} ORDER BY i.due_at, i.id`, ...params));
+    res.json((await attachChecklists(db, items)).map(serializeItem));
   });
 
-  r.post('/items', (req, res) => {
-    const item = itemInput(uid(req), req.body);
+  r.post('/items', async (req, res) => {
+    const item = await itemInput(uid(req), req.body);
     const checklist = checklistInput(req.body.checklist) || [];
-    const itemId = tx(db, () => {
-      const { lastInsertRowid } = db
-        .prepare('INSERT INTO items (user_id, type, title, description, subject_id, due_at, reminder_minutes, done, done_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(uid(req), item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, item.done ? new Date().toISOString() : null);
-      saveChecklist(lastInsertRowid, checklist);
-      return lastInsertRowid;
+    const now = new Date().toISOString();
+    const itemId = await db.tx(async (t) => {
+      const { insertId } = await t.run(
+        'INSERT INTO items (user_id, type, title, description, subject_id, due_at, reminder_minutes, done, done_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        uid(req), item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, item.done ? now : null, now
+      );
+      await saveChecklist(t, insertId, checklist);
+      return insertId;
     });
-    res.status(201).json(loadItem(uid(req), itemId));
+    res.status(201).json(await loadItem(uid(req), itemId));
   });
 
-  r.put('/items/:id', (req, res) => {
-    const existing = loadItem(uid(req), id(req.params.id));
+  r.put('/items/:id', async (req, res) => {
+    const existing = await loadItem(uid(req), id(req.params.id));
     if (!existing) throw notFound('Tarea');
-    const item = itemInput(uid(req), { ...existing, ...req.body });
+    const item = await itemInput(uid(req), { ...existing, ...req.body });
     const checklist = checklistInput(req.body.checklist);
     const resetReminder = item.due_at !== existing.due_at || item.reminder_minutes !== existing.reminder_minutes;
     const doneAt = item.done ? (existing.done ? existing.done_at : new Date().toISOString()) : null;
-    tx(db, () => {
-      db.prepare(
+    await db.tx(async (t) => {
+      await t.run(
         `UPDATE items SET type = ?, title = ?, description = ?, subject_id = ?, due_at = ?, reminder_minutes = ?, done = ?, done_at = ?,
-         reminder_sent_at = CASE WHEN ? THEN NULL ELSE reminder_sent_at END WHERE id = ?`
-      ).run(item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, doneAt, resetReminder ? 1 : 0, existing.id);
-      if (checklist) saveChecklist(existing.id, checklist);
+         reminder_sent_at = CASE WHEN ? = 1 THEN NULL ELSE reminder_sent_at END WHERE id = ?`,
+        item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, doneAt, resetReminder ? 1 : 0, existing.id
+      );
+      if (checklist) await saveChecklist(t, existing.id, checklist);
     });
-    res.json(loadItem(uid(req), existing.id));
+    res.json(await loadItem(uid(req), existing.id));
   });
 
-  r.delete('/items/:id', (req, res) => {
-    const { changes } = db.prepare('DELETE FROM items WHERE id = ? AND user_id = ?').run(id(req.params.id), uid(req));
+  r.delete('/items/:id', async (req, res) => {
+    const { changes } = (await db.run('DELETE FROM items WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
     if (!changes) throw notFound('Tarea');
     res.status(204).end();
   });
 
-  r.patch('/checklist/:id', (req, res) => {
-    const row = db
-      .prepare('SELECT c.*, i.id AS item_id FROM checklist_items c JOIN items i ON i.id = c.item_id WHERE c.id = ? AND i.user_id = ?')
-      .get(id(req.params.id), uid(req));
+  r.patch('/checklist/:id', async (req, res) => {
+    const row = await db.get('SELECT c.*, i.id AS item_id FROM checklist_items c JOIN items i ON i.id = c.item_id WHERE c.id = ? AND i.user_id = ?', id(req.params.id), uid(req));
     if (!row) throw notFound('Elemento de la lista');
     const done = req.body.done !== undefined ? (req.body.done ? 1 : 0) : row.done;
     const text = req.body.text !== undefined ? str(req.body.text, 'El texto', { max: 200, required: true }) : row.text;
-    db.prepare('UPDATE checklist_items SET done = ?, text = ? WHERE id = ?').run(done, text, row.id);
-    res.json(loadItem(uid(req), row.item_id));
+    (await db.run('UPDATE checklist_items SET done = ?, text = ? WHERE id = ?', done, text, row.id));
+    res.json(await loadItem(uid(req), row.item_id));
   });
 
   /* ---------- errores ---------- */
