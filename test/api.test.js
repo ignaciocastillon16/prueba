@@ -13,7 +13,7 @@ if (testUrl) {
   const { default: mysql } = await import('mysql2/promise');
   const conn = await mysql.createConnection(testUrl);
   await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-  for (const t of ['push_subscriptions', 'app_settings', 'checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
+  for (const t of ['timetables', 'push_subscriptions', 'app_settings', 'checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
   await conn.end();
 }
 const db = await openDb(testUrl ? dbConfigFromEnv({ DATABASE_URL: testUrl }) : { file: ':memory:' });
@@ -262,4 +262,88 @@ test('notificaciones push', async () => {
   // Al darse de baja, deja de recibir
   await c('POST', '/push/unsubscribe', { endpoint: 'https://push.example.com/movil' });
   assert.equal((await c('GET', '/me')).body.push_devices, 0);
+});
+
+test('varios horarios', async () => {
+  const c = client();
+  const reg = await c('POST', '/auth/register', { name: 'Iris', email: 'iris@x.com', password: 'secreto123' });
+  const boot = (await c('GET', '/bootstrap')).body;
+  assert.equal(boot.timetables.length, 1);
+  assert.equal(boot.timetables[0].name, 'Mi horario');
+  const tt1 = boot.timetables[0].id;
+  assert.equal(reg.body.user.active_timetable_id, tt1);
+  assert.ok(boot.slots.every((s) => s.timetable_id === tt1));
+
+  const subj = (await c('POST', '/subjects', { name: 'Arte', color: '#aa3366' })).body;
+  await c('PUT', '/schedule', { slot_id: boot.slots[0].id, day: 1, subject_id: subj.id, room_override: 'T1' });
+
+  assert.equal((await c('POST', '/timetables', { name: 'Malo', start_date: '2027-13-01' })).status, 400);
+  assert.equal((await c('POST', '/timetables', { name: 'Malo', start_date: '2027-06-01', end_date: '2027-02-01' })).status, 400);
+
+  const copy = await c('POST', '/timetables', { name: '2º cuatrimestre', copy_from: tt1, start_date: '2027-02-01', end_date: '2027-06-30' });
+  assert.equal(copy.status, 201);
+  const tt2 = copy.body.id;
+  assert.equal(copy.body.user.active_timetable_id, tt2, 'el nuevo queda activo');
+  const slots2 = copy.body.slots.filter((s) => s.timetable_id === tt2);
+  assert.equal(slots2.length, 7, 'copia los tramos');
+  const copied = copy.body.schedule.find((e) => slots2.some((s) => s.id === e.slot_id));
+  assert.equal(copied.subject_id, subj.id, 'copia las clases');
+  assert.equal(copied.room_override, 'T1');
+  assert.equal(copy.body.timetables.find((t) => t.id === tt2).start_date, '2027-02-01');
+
+  const empty = await c('POST', '/timetables', { name: 'Vacío' });
+  assert.equal(empty.body.slots.filter((s) => s.timetable_id === empty.body.id).length, 7, 'tramos por defecto');
+  assert.equal(empty.body.schedule.filter((e) => empty.body.slots.some((s) => s.id === e.slot_id && s.timetable_id === empty.body.id)).length, 0);
+
+  const upd = await c('PUT', `/timetables/${tt2}`, { name: '2º cuatri', background: 'menta' });
+  assert.equal(upd.body.find((t) => t.id === tt2).background, 'menta');
+  assert.equal((await c('PUT', `/timetables/${tt2}`, { background: 'otro' })).status, 400);
+
+  const added = (await c('POST', '/slots', { timetable_id: tt2, start_time: '15:00', end_time: '16:00' })).body;
+  assert.equal(added.filter((s) => s.timetable_id === tt2).length, 8);
+  assert.equal(added.filter((s) => s.timetable_id === tt1).length, 7, 'no toca el otro horario');
+
+  // Aislamiento entre usuarios
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-tt@x.com', password: 'secreto123' });
+  assert.equal((await otro('PUT', `/timetables/${tt2}`, { name: 'x' })).status, 404);
+  assert.equal((await otro('DELETE', `/timetables/${tt2}`)).status, 404);
+  assert.equal((await otro('POST', '/timetables', { name: 'x', copy_from: tt2 })).status, 404);
+  assert.equal((await otro('PUT', '/me/settings', { active_timetable_id: tt2 })).status, 404);
+  assert.equal((await otro('POST', '/slots', { timetable_id: tt2, start_time: '15:00', end_time: '16:00' })).status, 404);
+
+  // Cambiar el activo y borrar
+  assert.equal((await c('PUT', '/me/settings', { active_timetable_id: tt2 })).body.user.active_timetable_id, tt2);
+  const del = await c('DELETE', `/timetables/${tt2}`);
+  assert.equal(del.status, 200);
+  assert.notEqual(del.body.user.active_timetable_id, tt2);
+  assert.equal(del.body.slots.filter((s) => s.timetable_id === tt2).length, 0);
+  assert.equal(del.body.schedule.filter((e) => slots2.some((s) => s.id === e.slot_id)).length, 0, 'borra sus clases');
+  await c('DELETE', `/timetables/${empty.body.id}`);
+  assert.equal((await c('DELETE', `/timetables/${tt1}`)).status, 400, 'no se borra el único');
+});
+
+test('migración: los datos antiguos pasan a «Mi horario»', async () => {
+  if (process.env.TEST_DATABASE_URL) return;
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'horaria-')), 'antigua.db');
+  let old = await openDb({ file });
+  // Simula un usuario de la versión anterior: tramos sin horario y sin horario activo
+  const u = await old.run("INSERT INTO users (name, email, password_hash, created_at, tt_background) VALUES ('Vieja', 'v@x.com', 'x', '2026-01-01', 'puntos')");
+  await old.run('DELETE FROM timetables WHERE user_id = ?', u.insertId);
+  await old.run("INSERT INTO time_slots (user_id, start_time, end_time, label) VALUES (?, '08:00', '09:00', '1')", u.insertId);
+  await old.close();
+  old = await openDb({ file });
+  const tts = await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId);
+  assert.equal(tts.length, 1);
+  assert.equal(tts[0].name, 'Mi horario');
+  assert.equal(tts[0].background, 'puntos', 'conserva el fondo elegido');
+  assert.equal((await old.get('SELECT timetable_id FROM time_slots WHERE user_id = ?', u.insertId)).timetable_id, tts[0].id);
+  assert.equal((await old.get('SELECT active_timetable_id FROM users WHERE id = ?', u.insertId)).active_timetable_id, tts[0].id);
+  await old.close();
+  old = await openDb({ file });
+  assert.equal((await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId)).length, 1, 'no se duplica al volver a arrancar');
+  await old.close();
 });

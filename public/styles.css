@@ -238,7 +238,7 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
 .status.warn { background: var(--warm-soft); color: color-mix(in srgb, var(--warm) 70%, var(--text)); }
 
 /* ---------- ventanas ---------- */
-.modal-backdrop { position: fixed; inset: 0; background: rgba(18, 26, 30, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; animation: fade .15s ease; }
+.modal-backdrop { position: fixed; inset: 0; overscroll-behavior: contain; background: rgba(18, 26, 30, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; animation: fade .15s ease; }
 .modal { background: var(--surface); border-radius: 16px; width: min(560px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 22px 24px; box-shadow: 0 24px 60px rgba(0, 0, 0, .22); animation: rise .18s ease; }
 .modal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .modal-head h2 { font-size: 21px; flex: 1; }
@@ -341,7 +341,7 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
   .settings .row { flex-direction: column; gap: 0; }
 
   .modal-backdrop { align-items: flex-end; padding: 0; }
-  .modal { width: 100%; border-radius: 18px 18px 0 0; max-height: 92dvh; padding: 10px 18px calc(16px + env(safe-area-inset-bottom)); animation: sheet .22s ease; }
+  .modal { width: 100%; border-radius: 18px 18px 0 0; max-height: calc(100% - max(16px, env(safe-area-inset-top))); padding: 10px 18px calc(16px + env(safe-area-inset-bottom)); animation: sheet .22s ease; }
   .modal::before { content: ""; display: block; width: 38px; height: 4px; border-radius: 4px; background: var(--border-strong); margin: 0 auto 12px; }
   .modal-foot { position: sticky; bottom: calc(-16px - env(safe-area-inset-bottom)); background: var(--surface); padding: 10px 0 0; margin-bottom: 0; }
   .modal-foot .btn { padding: 10px 14px; }
@@ -449,3 +449,33 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
 .status.info { background: var(--accent-soft); color: var(--text); }
 .status ol { margin: 6px 0 0; padding-left: 20px; }
 .status ol li { margin: 2px 0; }
+
+/* Selector de horario en el título */
+.tt-toolbar .tt-switch { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: min(60%, 520px); }
+.tt-switch select { -webkit-appearance: none; appearance: none; border: none; background: transparent; box-shadow: none; width: 100%;
+  font-family: var(--font-display); font-size: 23px; font-weight: 600; letter-spacing: -0.01em; color: var(--text);
+  padding: 3px 32px 3px 8px; border-radius: 9px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-switch select:hover { background: var(--surface-2); }
+.tt-switch select:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.tt-switch .i { position: absolute; right: 8px; pointer-events: none; color: var(--muted); }
+.tt-field { max-width: 360px; }
+
+/* Asignaturas por siglas en la ventana de tareas */
+.subject-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.schip { min-width: 48px; padding: 8px 10px; border-radius: 9px; border: none; background: var(--c); color: var(--ink); font-weight: 700; font-size: 13.5px;
+  letter-spacing: .03em; cursor: pointer; transition: transform .1s; }
+.schip.none { background: var(--surface-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.schip.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+.schip:active { transform: scale(.96); }
+#subj-name { margin-top: 2px; }
+
+/* Vista previa de la imagen del horario */
+.tt-preview { display: block; width: 100%; max-height: 62vh; object-fit: contain; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); }
+
+@media (max-width: 760px) {
+  .tt-toolbar { flex-wrap: wrap; }
+  .tt-toolbar .tt-switch { max-width: none; flex: 1 1 calc(100% - 50px); }
+  .tt-switch select { font-size: 20px; padding-left: 4px; }
+  .tt-toolbar .spacer { display: none; }
+  .schip { min-width: 52px; padding: 10px 11px; font-size: 14px; }
+}

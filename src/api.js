@@ -85,6 +85,7 @@ function publicUser(u) {
     daily_digest: Boolean(u.daily_digest),
     digest_hour: u.digest_hour,
     tt_background: u.tt_background || 'rayas',
+    active_timetable_id: u.active_timetable_id,
   };
 }
 
@@ -169,9 +170,11 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
         'INSERT INTO users (name, email, password_hash, timezone, created_at) VALUES (?, ?, ?, ?, ?)',
         name, email, hash, tz, new Date().toISOString()
       );
+      const tt = await t.run('INSERT INTO timetables (user_id, name, created_at) VALUES (?, ?, ?)', insertId, 'Mi horario', new Date().toISOString());
       for (const s of DEFAULT_SLOTS) {
-        await t.run('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)', insertId, ...s);
+        await t.run('INSERT INTO time_slots (user_id, timetable_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?, ?)', insertId, tt.insertId, ...s);
       }
+      await t.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', tt.insertId, insertId);
       return insertId;
     });
     await startSession(req, res, userId);
@@ -209,6 +212,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       push_available: Boolean(pusher),
       push_devices: await pushDevices(uid(req)),
       subjects: (await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))),
+      timetables: await listTimetables(uid(req)),
       slots: await listSlots(uid(req)),
       schedule: await listSchedule(uid(req)),
     });
@@ -236,6 +240,12 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       if (!TT_BACKGROUNDS.includes(b.tt_background)) throw bad('El fondo elegido no es válido');
       next.tt_background = b.tt_background;
     }
+    next.active_timetable_id = u.active_timetable_id;
+    if (b.active_timetable_id !== undefined) {
+      const tt = await getTimetable(u.id, id(b.active_timetable_id));
+      if (!tt) throw notFound('Horario');
+      next.active_timetable_id = tt.id;
+    }
     if (b.visible_days !== undefined) {
       if (!Array.isArray(b.visible_days)) throw bad('Los días visibles no son válidos');
       const days = [...new Set(b.visible_days.map((d) => int(d, 'Día', 0, 6)))].sort();
@@ -244,7 +254,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     }
     const lastDigest = next.digest_hour !== u.digest_hour ? null : u.last_digest_date;
     (await db.run(`UPDATE users SET name = ?, timezone = ?, visible_days = ?, email_notifications = ?, default_reminder_minutes = ?,
-       daily_digest = ?, digest_hour = ?, last_digest_date = ?, tt_background = ? WHERE id = ?`, next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, lastDigest, next.tt_background, u.id));
+       daily_digest = ?, digest_hour = ?, last_digest_date = ?, tt_background = ?, active_timetable_id = ? WHERE id = ?`, next.name, next.timezone, next.visible_days, next.email_notifications, next.default_reminder_minutes, next.daily_digest, next.digest_hour, lastDigest, next.tt_background, next.active_timetable_id, u.id));
     res.json({ user: publicUser((await db.get('SELECT * FROM users WHERE id = ?', u.id))) });
   });
 
@@ -337,7 +347,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
 
   /* ---------- tramos horarios ---------- */
   const listSlots = async (userId) =>
-    (await db.all('SELECT id, start_time, end_time, label, is_break FROM time_slots WHERE user_id = ? ORDER BY start_time, end_time', userId)).map((s) => ({ ...s, is_break: Boolean(s.is_break) }));
+    (await db.all('SELECT id, timetable_id, start_time, end_time, label, is_break FROM time_slots WHERE user_id = ? ORDER BY timetable_id, start_time, end_time', userId)).map((s) => ({ ...s, is_break: Boolean(s.is_break) }));
   function slotInput(b) {
     const s = {
       start_time: time(b.start_time, 'La hora de inicio'),
@@ -351,8 +361,10 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   r.get('/slots', async (req, res) => res.json(await listSlots(uid(req))));
   r.post('/slots', async (req, res) => {
     const s = slotInput(req.body);
-    if ((await db.get('SELECT COUNT(*) AS n FROM time_slots WHERE user_id = ?', uid(req))).n >= 30) throw bad('Máximo 30 tramos horarios');
-    (await db.run('INSERT INTO time_slots (user_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?)', uid(req), s.start_time, s.end_time, s.label, s.is_break));
+    const ttId = req.body.timetable_id ? id(req.body.timetable_id) : req.user.active_timetable_id;
+    if (!(await getTimetable(uid(req), ttId))) throw notFound('Horario');
+    if ((await db.get('SELECT COUNT(*) AS n FROM time_slots WHERE timetable_id = ?', ttId)).n >= 30) throw bad('Máximo 30 tramos por horario');
+    (await db.run('INSERT INTO time_slots (user_id, timetable_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?, ?)', uid(req), ttId, s.start_time, s.end_time, s.label, s.is_break));
     res.status(201).json(await listSlots(uid(req)));
   });
   r.put('/slots/:id', async (req, res) => {
@@ -366,6 +378,97 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const { changes } = (await db.run('DELETE FROM time_slots WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
     if (!changes) throw notFound('Tramo');
     res.json(await listSlots(uid(req)));
+  });
+
+  /* ---------- horarios (puede haber varios) ---------- */
+  const listTimetables = async (userId) =>
+    db.all('SELECT id, name, start_date, end_date, background FROM timetables WHERE user_id = ? ORDER BY id', userId);
+  const getTimetable = async (userId, ttId) =>
+    db.get('SELECT id, name, start_date, end_date, background FROM timetables WHERE id = ? AND user_id = ?', ttId, userId);
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  function optDate(v, name) {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v !== 'string' || !DATE_RE.test(v) || Number.isNaN(Date.parse(v))) throw bad(`${name} no es una fecha válida`);
+    return v;
+  }
+  function timetableInput(b) {
+    const t = {
+      name: str(b.name, 'El nombre del horario', { max: 80, required: true }),
+      start_date: optDate(b.start_date, 'La fecha de inicio'),
+      end_date: optDate(b.end_date, 'La fecha de fin'),
+      background: b.background ?? 'rayas',
+    };
+    if (!TT_BACKGROUNDS.includes(t.background)) throw bad('El fondo elegido no es válido');
+    if (t.start_date && t.end_date && t.start_date > t.end_date) throw bad('La fecha de fin debe ser posterior a la de inicio');
+    return t;
+  }
+  const timetablesPayload = async (userId) => ({
+    user: publicUser(await db.get('SELECT * FROM users WHERE id = ?', userId)),
+    timetables: await listTimetables(userId),
+    slots: await listSlots(userId),
+    schedule: await listSchedule(userId),
+  });
+
+  r.get('/timetables', async (req, res) => res.json(await listTimetables(uid(req))));
+
+  // Crea un horario nuevo (vacío con los tramos por defecto, o copia de otro) y lo deja activo.
+  r.post('/timetables', async (req, res) => {
+    const t = timetableInput(req.body);
+    if ((await db.get('SELECT COUNT(*) AS n FROM timetables WHERE user_id = ?', uid(req))).n >= 20) throw bad('Máximo 20 horarios');
+    const source = req.body.copy_from ? await getTimetable(uid(req), id(req.body.copy_from)) : null;
+    if (req.body.copy_from && !source) throw notFound('Horario');
+    const newId = await db.tx(async (tx) => {
+      const { insertId } = await tx.run(
+        'INSERT INTO timetables (user_id, name, start_date, end_date, background, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        uid(req), t.name, t.start_date, t.end_date, req.body.background ? t.background : source?.background || 'rayas', new Date().toISOString()
+      );
+      if (source) {
+        const slots = await tx.all('SELECT * FROM time_slots WHERE timetable_id = ? ORDER BY start_time', source.id);
+        for (const s of slots) {
+          const copy = await tx.run(
+            'INSERT INTO time_slots (user_id, timetable_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?, ?)',
+            uid(req), insertId, s.start_time, s.end_time, s.label, s.is_break
+          );
+          for (const e of await tx.all('SELECT * FROM schedule_entries WHERE slot_id = ?', s.id)) {
+            await tx.run(
+              'INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)',
+              uid(req), e.subject_id, copy.insertId, e.day, e.room_override
+            );
+          }
+        }
+      } else {
+        for (const s of DEFAULT_SLOTS) {
+          await tx.run('INSERT INTO time_slots (user_id, timetable_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?, ?)', uid(req), insertId, ...s);
+        }
+      }
+      await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', insertId, uid(req));
+      return insertId;
+    });
+    res.status(201).json({ id: newId, ...(await timetablesPayload(uid(req))) });
+  });
+
+  r.put('/timetables/:id', async (req, res) => {
+    const existing = await getTimetable(uid(req), id(req.params.id));
+    if (!existing) throw notFound('Horario');
+    const t = timetableInput({ ...existing, ...req.body });
+    await db.run('UPDATE timetables SET name = ?, start_date = ?, end_date = ?, background = ? WHERE id = ?', t.name, t.start_date, t.end_date, t.background, existing.id);
+    res.json(await listTimetables(uid(req)));
+  });
+
+  r.delete('/timetables/:id', async (req, res) => {
+    const existing = await getTimetable(uid(req), id(req.params.id));
+    if (!existing) throw notFound('Horario');
+    const all = await listTimetables(uid(req));
+    if (all.length <= 1) throw bad('No puedes borrar tu único horario');
+    await db.tx(async (tx) => {
+      // Al borrar los tramos se borran también sus clases (clave foránea en cascada).
+      await tx.run('DELETE FROM time_slots WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
+      await tx.run('DELETE FROM timetables WHERE id = ?', existing.id);
+      if (req.user.active_timetable_id === existing.id) {
+        await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', all.find((x) => x.id !== existing.id).id, uid(req));
+      }
+    });
+    res.json(await timetablesPayload(uid(req)));
   });
 
   /* ---------- horario semanal ---------- */

@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
   name TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS timetables (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  start_date TEXT,
+  end_date TEXT,
+  background TEXT NOT NULL DEFAULT 'rayas',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timetables_user ON timetables(user_id);
 `;
 
 // Compatible con MySQL 5.7+, MySQL 8 y MariaDB 10.3+ (lo que ofrece Hostinger).
@@ -201,6 +211,17 @@ const MYSQL_SCHEMA = [
     name VARCHAR(64) NOT NULL PRIMARY KEY,
     value TEXT NOT NULL
   ) ${TABLE_OPTS}`,
+  `CREATE TABLE IF NOT EXISTS timetables (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    start_date VARCHAR(10) NULL,
+    end_date VARCHAR(10) NULL,
+    background VARCHAR(20) NOT NULL DEFAULT 'rayas',
+    created_at VARCHAR(30) NOT NULL,
+    KEY idx_timetables_user (user_id),
+    CONSTRAINT fk_timetables_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ${TABLE_OPTS}`,
 ];
 
 /*
@@ -209,6 +230,8 @@ const MYSQL_SCHEMA = [
  */
 const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN tt_background VARCHAR(20) NOT NULL DEFAULT 'rayas'",
+  'ALTER TABLE users ADD COLUMN active_timetable_id INT NULL',
+  'ALTER TABLE time_slots ADD COLUMN timetable_id INT NULL',
 ];
 async function migrate(api) {
   for (const sql of MIGRATIONS) {
@@ -217,6 +240,20 @@ async function migrate(api) {
     } catch (err) {
       if (!/duplicate column/i.test(err.message)) throw err;
     }
+  }
+  // Varios horarios: a quien aún no tiene ninguno se le crea «Mi horario» con sus tramos actuales.
+  const pending = await api.all(
+    'SELECT u.id, u.tt_background FROM users u WHERE NOT EXISTS (SELECT 1 FROM timetables t WHERE t.user_id = u.id)'
+  );
+  for (const u of pending) {
+    await api.tx(async (t) => {
+      const { insertId } = await t.run(
+        'INSERT INTO timetables (user_id, name, background, created_at) VALUES (?, ?, ?, ?)',
+        u.id, 'Mi horario', u.tt_background || 'rayas', new Date().toISOString()
+      );
+      await t.run('UPDATE time_slots SET timetable_id = ? WHERE user_id = ? AND timetable_id IS NULL', insertId, u.id);
+      await t.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', insertId, u.id);
+    });
   }
 }
 

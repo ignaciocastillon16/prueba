@@ -45,6 +45,8 @@ const ICONS = {
   alert: '<path d="M10.3 4.6 3 17.5A2 2 0 0 0 4.7 20.5h14.6a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 17h.01"/>',
   logout: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="M9.5 16 5.5 12l4-4M5.5 12H15"/>',
   exam: '<path d="M7 3h7.5L19 7.5V21H7Z"/><path d="M14 3v5h5M10 12.5h5.5M10 16.5h5.5"/>',
+  down: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
+  download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
   palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.7-1.6h2.1a4 4 0 0 0 4-4C20.5 6.6 16.7 3.5 12 3.5Z"/><circle cx="7.8" cy="11.2" r="1.1"/><circle cx="10" cy="7.6" r="1.1"/><circle cx="14.6" cy="7.6" r="1.1"/>',
 };
 const icon = (name, cls = '') =>
@@ -148,12 +150,36 @@ const state = {
 const subjectById = (id) => state.subjects.find((s) => s.id === id);
 const itemById = (id) => state.items.find((i) => i.id === id);
 const visibleDays = () => DAY_ORDER.filter((d) => state.user.visible_days.includes(d));
-function classesOn(day) {
-  const slotIndex = new Map(state.slots.map((s, i) => [s.id, i]));
+/* Varios horarios: cada uno tiene sus tramos y clases. */
+const activeTT = () => state.timetables.find((t) => t.id === state.user.active_timetable_id) || state.timetables[0];
+const ttSlots = (ttId) => state.slots.filter((s) => s.timetable_id === ttId);
+/** Horario que corresponde a una fecha: el que tenga esas fechas o, si no, el activo. */
+function timetableForDate(d) {
+  const k = typeof d === 'string' ? d : dateKey(d);
+  return (
+    state.timetables.find((t) => (t.start_date || t.end_date) && (!t.start_date || k >= t.start_date) && (!t.end_date || k <= t.end_date)) ||
+    activeTT()
+  );
+}
+function applyTimetables(payload) {
+  if (payload.user) state.user = payload.user;
+  if (payload.timetables) state.timetables = payload.timetables;
+  if (payload.slots) state.slots = payload.slots;
+  if (payload.schedule) state.schedule = payload.schedule;
+}
+async function setActiveTimetable(id) {
+  const r = await attempt(() => api('PUT', '/me/settings', { active_timetable_id: id }));
+  if (r) state.user = r.user;
+  renderView();
+}
+
+function classesOn(day, ttId = activeTT().id) {
+  const slots = ttSlots(ttId);
+  const slotIndex = new Map(slots.map((s, i) => [s.id, i]));
   return state.schedule
     .filter((e) => e.day === day && slotIndex.has(e.slot_id) && subjectById(e.subject_id))
     .sort((a, b) => slotIndex.get(a.slot_id) - slotIndex.get(b.slot_id))
-    .map((e) => ({ entry: e, slot: state.slots[slotIndex.get(e.slot_id)], subject: subjectById(e.subject_id) }));
+    .map((e) => ({ entry: e, slot: slots[slotIndex.get(e.slot_id)], subject: subjectById(e.subject_id) }));
 }
 
 async function loadAll() {
@@ -164,6 +190,7 @@ async function loadAll() {
   state.pushDevices = boot.push_devices;
   state.subjects = boot.subjects;
   state.slots = boot.slots;
+  state.timetables = boot.timetables;
   state.schedule = boot.schedule;
   state.items = items;
 }
@@ -336,6 +363,8 @@ const ACTIONS = {
   },
   goto: (d) => { location.hash = d.view; },
   pickBackground: () => openBackgroundModal(),
+  editTimetable: () => openTimetableModal(activeTT()),
+  downloadTimetable: () => openDownloadModal(),
 };
 
 /* ============================================================
@@ -384,7 +413,13 @@ function monthView() {
     byDay.get(k).push(it);
   }
   const todayKey = dateKey(new Date());
-  const classCache = new Map(days.map((d) => [d, classesOn(d)]));
+  const classCache = new Map();
+  const classesFor = (d) => {
+    const tt = timetableForDate(d);
+    const k = `${tt.id}-${d.getDay()}`;
+    if (!classCache.has(k)) classCache.set(k, classesOn(d.getDay(), tt.id));
+    return classCache.get(k);
+  };
   const title = cap(state.cursor.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
   const monthPrefix = `${y}-${pad(m + 1)}`;
   const monthItems = state.items.filter((i) => dateKey(new Date(i.due_at)).startsWith(monthPrefix));
@@ -400,14 +435,14 @@ function monthView() {
     const k = dateKey(d);
     if (mobile) {
       const dayItems = byDay.get(k) || [];
-      const groups = state.showClasses ? groupClasses(classCache.get(d.getDay())) : [];
+      const groups = state.showClasses ? groupClasses(classesFor(d)) : [];
       return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''} ${k === state.selectedDay ? 'selected' : ''}" data-date="${k}">
         <span class="day-num">${d.getDate()}</span>
         ${groups.length ? `<div class="cbar">${groups.map((g) => `<i style="background:${g.subject.color};flex:${g.count}"></i>`).join('')}</div>` : ''}
         <div class="dots">${dayItems.slice(0, 4).map((i) => `<i class="${i.type} ${i.done ? 'done' : ''}" style="--c:${subjectById(i.subject_id)?.color || 'var(--muted)'}"></i>`).join('')}${dayItems.length > 4 ? `<b>+${dayItems.length - 4}</b>` : ''}</div>
       </div>`;
     }
-    const classes = state.showClasses ? classCache.get(d.getDay()) : [];
+    const classes = state.showClasses ? classesFor(d) : [];
     return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''}" data-date="${k}">
       <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea" aria-label="Añadir tarea">${icon('plus')}</button></div>
       ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="--c:${g.subject.color}" title="${esc(`${g.start}–${g.end} ${g.subject.name}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
@@ -451,9 +486,8 @@ const TT_BACKGROUNDS = [
 ];
 
 /** Clases de un día agrupadas: las horas seguidas de la misma asignatura y aula forman un solo bloque. */
-function dayBlocks(day) {
+function dayBlocks(day, slots = ttSlots(activeTT().id)) {
   const blocks = [];
-  const slots = state.slots;
   for (let i = 0; i < slots.length; ) {
     if (slots[i].is_break) { i++; continue; }
     const at = (k) => {
@@ -478,8 +512,25 @@ function dayBlocks(day) {
 
 function weekView() {
   const days = visibleDays();
-  if (!state.slots.length) {
-    return `<div class="empty card"><strong>Aún no hay tramos horarios</strong><p>Define primero las horas de clase.</p><button class="btn btn-primary" data-action="goto" data-view="settings">Configurar tramos</button></div>`;
+  const tt = activeTT();
+  const slots = ttSlots(tt.id);
+  const toolbar = `
+    <div class="toolbar tt-toolbar">
+      <label class="tt-switch" title="Cambiar de horario">
+        <select id="tt-select" aria-label="Horario">
+          ${state.timetables.map((t) => `<option value="${t.id}" ${t.id === tt.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+          <option value="__new">+ Nuevo horario…</option>
+        </select>${icon('down')}
+      </label>
+      <button class="icon-btn" data-action="editTimetable" title="Editar este horario" aria-label="Editar este horario">${icon('pencil')}</button>
+      <span class="spacer"></span>
+      <button class="btn" data-action="downloadTimetable" title="Descargar como imagen">${icon('download')}<span class="long">Descargar</span></button>
+      <button class="btn" data-action="pickBackground" title="Fondo del horario">${icon('palette')}<span class="long">Fondo</span></button>
+      <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">${icon('sliders')}<span class="long">Tramos</span></button>
+      <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">${icon('book')}<span class="long">Asignaturas</span></button>
+    </div>`;
+  if (!slots.length) {
+    return `${toolbar}<div class="empty card"><strong>Este horario aún no tiene tramos</strong><p>Define primero las horas de clase.</p><button class="btn btn-primary" data-action="goto" data-view="settings">Configurar tramos</button></div>`;
   }
   const now = new Date();
   const nowTime = timeOf(now);
@@ -489,7 +540,7 @@ function weekView() {
     cells += `<div class="tt-head ${d === todayDow ? 'today' : ''}" style="grid-area:1 / ${j + 2}"><span class="long">${DAY_LONG[d]}</span><span class="short">${DAY_SHORT[d]}</span></div>`;
   });
   let number = 0;
-  state.slots.forEach((slot, i) => {
+  slots.forEach((slot, i) => {
     const row = i + 2;
     const range = `${slot.start_time}–${slot.end_time}`;
     if (slot.is_break) {
@@ -503,7 +554,7 @@ function weekView() {
     cells += `<div class="tt-time" style="grid-area:${row} / 1" title="${esc(range + (slot.label ? ` · ${slot.label}` : ''))}"><span class="t">${slot.start_time}</span><b>${shown}</b></div>`;
   });
   days.forEach((d, j) => {
-    for (const b of dayBlocks(d)) {
+    for (const b of dayBlocks(d, slots)) {
       const startT = b.slots[0].start_time;
       const endT = b.slots[b.slots.length - 1].end_time;
       const isNow = d === todayDow && nowTime >= startT && nowTime < endT;
@@ -521,18 +572,9 @@ function weekView() {
       }
     }
   });
-  const rows = state.slots.map((x) => (x.is_break ? 'minmax(0,.6fr)' : 'minmax(0,1fr)')).join(' ');
-  const bg = state.user.tt_background || 'rayas';
-  return `
-    <div class="toolbar">
-      <h2>Horario semanal</h2>
-      <span class="hint hide-mobile">Pulsa una clase para cambiarla.</span>
-      <span class="spacer"></span>
-      <button class="btn" data-action="pickBackground" title="Fondo del horario">${icon('palette')}<span class="long">Fondo</span></button>
-      <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">${icon('sliders')}<span class="long">Tramos y días</span></button>
-      <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">${icon('book')}<span class="long">Asignaturas</span></button>
-    </div>
-    <div class="tt-board bg-${bg}">
+  const rows = slots.map((x) => (x.is_break ? 'minmax(0,.6fr)' : 'minmax(0,1fr)')).join(' ');
+  return `${toolbar}
+    <div class="tt-board bg-${tt.background || 'rayas'}">
       <div class="tt-grid" style="grid-template-columns:${isMobile() ? '38px' : '68px'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${cells}</div>
     </div>`;
 }
@@ -566,7 +608,8 @@ window.addEventListener('resize', () => {
 });
 
 function openBackgroundModal() {
-  const current = state.user.tt_background || 'rayas';
+  const tt = activeTT();
+  const current = tt.background || 'rayas';
   openModal(`
     <div class="modal-head"><h2>Fondo del horario</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
     <div class="bg-options">
@@ -575,13 +618,371 @@ function openBackgroundModal() {
     $('.bg-options', root).onclick = async (e) => {
       const b = e.target.closest('[data-bg]');
       if (!b) return;
-      const r = await attempt(() => api('PUT', '/me/settings', { tt_background: b.dataset.bg }));
+      const r = await attempt(() => api('PUT', `/timetables/${tt.id}`, { background: b.dataset.bg }));
       if (r) {
-        state.user = r.user;
+        state.timetables = r;
         closeModal();
         renderView();
       }
     };
+  });
+}
+
+/** Crear un horario nuevo (tt = null) o editar uno existente. */
+function openTimetableModal(tt) {
+  const isNew = !tt;
+  const current = activeTT();
+  openModal(`
+    <form id="tt-form" novalidate>
+      <div class="modal-head"><h2>${isNew ? 'Nuevo horario' : 'Editar horario'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      <label class="field"><span>Nombre</span><input type="text" name="name" maxlength="80" required value="${esc(tt?.name || '')}" placeholder="Ej.: 3º Publicidad y RRPP (2º cuatrimestre)"></label>
+      <div class="row">
+        <label class="field"><span>Desde (opcional)</span><input type="date" name="start_date" value="${tt?.start_date || ''}"></label>
+        <label class="field"><span>Hasta (opcional)</span><input type="date" name="end_date" value="${tt?.end_date || ''}"></label>
+      </div>
+      <p class="hint" style="margin:-6px 0 14px">Si pones fechas, el calendario mensual usará este horario en esos días. Fuera de ellas se usa el horario que tengas abierto.</p>
+      ${isNew ? `<label class="field"><span>Empezar con</span><select name="copy_from">
+          ${state.timetables.map((t) => `<option value="${t.id}" ${t.id === current.id ? 'selected' : ''}>Una copia de «${esc(t.name)}» (tramos y clases)</option>`).join('')}
+          <option value="">Un horario vacío con los tramos por defecto</option>
+        </select></label>` : ''}
+      <div class="error" id="form-error"></div>
+      <div class="modal-foot">
+        ${!isNew && state.timetables.length > 1 ? `<button type="button" class="btn btn-danger left" id="tt-delete">${icon('trash')}Eliminar</button>` : ''}
+        <button type="button" class="btn" data-close>Cancelar</button>
+        <button class="btn btn-primary">${isNew ? 'Crear horario' : 'Guardar'}</button>
+      </div>
+    </form>`, (root) => {
+    const form = $('#tt-form', root);
+    if (!window.matchMedia('(pointer: coarse)').matches) form.name.focus();
+    const del = $('#tt-delete', root);
+    if (del) {
+      del.onclick = async () => {
+        if (!confirm(`¿Eliminar el horario «${tt.name}»? Se borrarán sus tramos y clases. Las asignaturas, tareas y exámenes no se tocan.`)) return;
+        const r = await attempt(() => api('DELETE', `/timetables/${tt.id}`), 'Horario eliminado');
+        if (r) {
+          applyTimetables(r);
+          closeModal();
+          renderView();
+        }
+      };
+    }
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = { name: form.name.value, start_date: form.start_date.value || null, end_date: form.end_date.value || null };
+      try {
+        if (isNew) {
+          applyTimetables(await api('POST', '/timetables', { ...body, copy_from: form.copy_from.value ? Number(form.copy_from.value) : null }));
+          toast('Horario creado');
+        } else {
+          state.timetables = await api('PUT', `/timetables/${tt.id}`, body);
+          toast('Horario guardado');
+        }
+        closeModal();
+        if (location.hash !== '#week') location.hash = 'week';
+        else renderView();
+      } catch (err) {
+        $('#form-error', form).textContent = err.message;
+      }
+    };
+  });
+}
+
+/* ============================================================
+   Imagen del horario (para guardar en la galería)
+   ============================================================ */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawBackground(ctx, bg, w, h) {
+  const fill = (c) => { ctx.fillStyle = c; ctx.fillRect(0, 0, w, h); };
+  const stripes = (a, b) => {
+    fill(b);
+    ctx.fillStyle = a;
+    for (let x = 0; x < w; x += 120) ctx.fillRect(x, 0, 60, h);
+  };
+  const gradient = (x1, y1, x2, y2, a, b) => {
+    const g = ctx.createLinearGradient(x1, y1, x2, y2);
+    g.addColorStop(0, a);
+    g.addColorStop(1, b);
+    fill(g);
+  };
+  switch (bg) {
+    case 'rayas-rosa': return stripes('#f2dce1', '#faf1e8');
+    case 'cuadricula':
+      fill('#fbfaf7');
+      ctx.fillStyle = '#dfe5eb';
+      for (let x = 0; x < w; x += 30) ctx.fillRect(x, 0, 1.5, h);
+      for (let y = 0; y < h; y += 30) ctx.fillRect(0, y, w, 1.5);
+      return;
+    case 'puntos':
+      fill('#f8f5ef');
+      ctx.fillStyle = '#cbc2b2';
+      for (let x = 12; x < w; x += 24) for (let y = 12; y < h; y += 24) { ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill(); }
+      return;
+    case 'lisa': return fill('#ffffff');
+    case 'arena': return fill('#eee4d5');
+    case 'menta': return gradient(0, 0, w, h, '#d9efe5', '#eef7f2');
+    case 'lavanda': return gradient(0, 0, w, h, '#e5def3', '#f4f1fa');
+    case 'cielo': return gradient(0, 0, 0, h, '#d8e9f6', '#f1f7fc');
+    case 'noche': return fill('#2a2f35');
+    default: return stripes('#d8e4e5', '#f1e9e0');
+  }
+}
+
+/** Parte el texto en líneas que caben en maxW. Si breakWords, corta las palabras largas con guion. */
+function wrapText(ctx, text, maxW, breakWords) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (ctx.measureText(candidate).width <= maxW) { line = candidate; continue; }
+    if (line) lines.push(line);
+    line = '';
+    if (ctx.measureText(word).width <= maxW) { line = word; continue; }
+    if (!breakWords) return null;
+    let chunk = '';
+    for (const ch of word) {
+      if (chunk && ctx.measureText(`${chunk}${ch}-`).width > maxW) { lines.push(`${chunk}-`); chunk = ch; } else chunk += ch;
+    }
+    line = chunk;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/** Busca el mayor tamaño de letra con el que el texto cabe en la caja. */
+function fitText(ctx, text, maxW, maxH, { start, comfy, min, weight = 500 }) {
+  const attempt = (size, breakWords) => {
+    ctx.font = `${weight} ${size}px Figtree, system-ui, sans-serif`;
+    const lines = wrapText(ctx, text, maxW, breakWords);
+    return lines && lines.length * size * 1.16 <= maxH ? { size, lines } : null;
+  };
+  for (let size = start; size >= comfy; size--) { const r = attempt(size, false); if (r) return r; }
+  for (let size = comfy; size >= min; size--) { const r = attempt(size, true); if (r) return r; }
+  ctx.font = `${weight} ${min}px Figtree, system-ui, sans-serif`;
+  const lines = wrapText(ctx, text, maxW, true);
+  const max = Math.max(1, Math.floor(maxH / (min * 1.16)));
+  return { size: min, lines: lines.length > max ? [...lines.slice(0, max - 1), `${lines[max - 1].slice(0, -1)}…`] : lines };
+}
+
+function drawLines(ctx, fit, cx, cy, color) {
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lh = fit.size * 1.16;
+  fit.lines.forEach((l, i) => ctx.fillText(l, cx, cy - ((fit.lines.length - 1) * lh) / 2 + i * lh));
+}
+
+function darken(hex, f = 0.82) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${Math.round(((n >> 16) & 255) * f)}, ${Math.round(((n >> 8) & 255) * f)}, ${Math.round((n & 255) * f)})`;
+}
+
+function drawIcon(ctx, name, x, y, size, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(size / 24, size / 24);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.8;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const m of ICONS[name].matchAll(/d="([^"]+)"/g)) ctx.stroke(new Path2D(m[1]));
+  ctx.restore();
+}
+
+/** Dibuja el horario en un lienzo de 1080 px de ancho, con el mismo aspecto que en pantalla. */
+async function timetableCanvas(tt) {
+  if (document.fonts) await document.fonts.ready;
+  const days = visibleDays();
+  const slots = ttSlots(tt.id);
+  const night = tt.background === 'noche';
+  const W = 1080;
+  const P = 44;
+  const titleH = 104;
+  const gap = 30;
+  const headH = 92;
+  const timeW = 118;
+  const footH = 96;
+  const rowH = slots.map((s) => (s.is_break ? 84 : 150));
+  const gridH = headH + rowH.reduce((a, b) => a + b, 0);
+  const H = P + titleH + gap + gridH + footH;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  drawBackground(ctx, tt.background, W, H);
+
+  // Título
+  roundRect(ctx, P, P, W - 2 * P, titleH, titleH / 2);
+  ctx.fillStyle = night ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.62)';
+  ctx.fill();
+  const title = fitText(ctx, tt.name, W - 2 * P - 80, titleH - 24, { start: 52, comfy: 34, min: 28, weight: 650 });
+  drawLines(ctx, { ...title, lines: title.lines.slice(0, 1) }, W / 2, P + titleH / 2 + 2, night ? '#f1f3f4' : '#22272b');
+
+  // Cuadrícula
+  const gx = P;
+  const gy = P + titleH + gap;
+  const gw = W - 2 * P;
+  const dayW = (gw - timeW) / days.length;
+  const colX = (j) => gx + timeW + j * dayW;
+  const rowY = [];
+  let acc = gy + headH;
+  rowH.forEach((h, i) => { rowY[i] = acc; acc += h; });
+  const line = night ? '#15181b' : '#45494d';
+  const cells = [];
+  const box = (x, y, w, h, fill) => {
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, w, h);
+    cells.push([x, y, w, h]);
+  };
+
+  box(gx, gy, timeW, headH, '#3b3e42');
+  days.forEach((d, j) => {
+    box(colX(j), gy, dayW, headH, '#76797d');
+    ctx.font = '600 40px Figtree, system-ui, sans-serif';
+    drawLines(ctx, { size: 40, lines: [DAY_SHORT[d]] }, colX(j) + dayW / 2, gy + headH / 2 + 2, '#ffffff');
+  });
+
+  const timeFill = night ? 'rgba(255,255,255,.07)' : 'rgba(255,255,255,.84)';
+  const timeInk = night ? '#dfe3e6' : '#2b2f33';
+  let number = 0;
+  slots.forEach((s, i) => {
+    const y = rowY[i];
+    const h = rowH[i];
+    box(gx, y, timeW, h, timeFill);
+    if (s.is_break) {
+      drawIcon(ctx, 'cup', gx + timeW / 2 - 18, y + h / 2 - 18, 36, '#8a8e92');
+      days.forEach((d, j) => {
+        box(colX(j), y, dayW, h, night ? '#4a5057' : '#c4c7ca');
+        const fit = fitText(ctx, (s.label || 'Descanso').toUpperCase(), dayW - 16, h - 16, { start: 30, comfy: 18, min: 14, weight: 650 });
+        drawLines(ctx, fit, colX(j) + dayW / 2, y + h / 2 + 1, night ? '#d8dcdf' : '#ffffff');
+      });
+      return;
+    }
+    number += 1;
+    ctx.fillStyle = timeInk;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.font = '500 26px Figtree, system-ui, sans-serif';
+    ctx.fillText(s.start_time, gx + 12, y + 36);
+    ctx.textAlign = 'right';
+    ctx.font = '650 54px Figtree, system-ui, sans-serif';
+    ctx.fillText(String(s.label.match(/\d+/)?.[0] ?? number), gx + timeW - 12, y + h - 16);
+  });
+
+  days.forEach((d, j) => {
+    for (const b of dayBlocks(d, slots)) {
+      const x = colX(j);
+      const y = rowY[b.row];
+      const h = rowH.slice(b.row, b.row + b.span).reduce((a, c) => a + c, 0);
+      if (!b.subject) { cells.push([x, y, dayW, h]); continue; }
+      const color = b.subject.color;
+      const ink = textOn(color);
+      box(x, y, dayW, h, color);
+      const band = b.room ? 52 : 0;
+      if (band) {
+        ctx.fillStyle = darken(color);
+        ctx.fillRect(x, y + h - band, dayW, band);
+        const rf = fitText(ctx, b.room, dayW - 14, band - 8, { start: 28, comfy: 18, min: 14, weight: 500 });
+        drawLines(ctx, { ...rf, lines: rf.lines.slice(0, 1) }, x + dayW / 2, y + h - band / 2 + 1, ink);
+      }
+      const nf = fitText(ctx, b.subject.name, dayW - 16, h - band - 14, { start: 38, comfy: 24, min: 17, weight: 500 });
+      drawLines(ctx, nf, x + dayW / 2, y + (h - band) / 2 + 1, ink);
+    }
+  });
+
+  ctx.strokeStyle = line;
+  ctx.lineWidth = 3;
+  for (const [x, y, w, h] of cells) ctx.strokeRect(x, y, w, h);
+  ctx.lineWidth = 6;
+  ctx.strokeRect(gx, gy, gw, gridH);
+
+  // Marca
+  const fy = gy + gridH + 26;
+  ctx.font = '600 34px Fraunces, Georgia, serif';
+  const wordW = ctx.measureText('Horaria').width;
+  const pillW = 44 + 14 + wordW + 40;
+  const px = W - P - pillW;
+  roundRect(ctx, px, fy, pillW, 60, 30);
+  ctx.fillStyle = night ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.62)';
+  ctx.fill();
+  ctx.save();
+  ctx.translate(px + 20, fy + 8);
+  ctx.scale(44 / 32, 44 / 32);
+  roundRect(ctx, 0, 0, 32, 32, 9);
+  ctx.fillStyle = '#2c5f6f';
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.stroke(new Path2D('M10.5 9.5v13M21.5 9.5v13M10.5 16h11'));
+  ctx.beginPath();
+  ctx.arc(25, 7.5, 3.2, 0, Math.PI * 2);
+  ctx.fillStyle = '#d9784c';
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = night ? '#f1f3f4' : '#1f2b30';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 34px Fraunces, Georgia, serif';
+  ctx.fillText('Horaria', px + 20 + 44 + 14, fy + 31);
+  return canvas;
+}
+
+async function openDownloadModal() {
+  const tt = activeTT();
+  if (!ttSlots(tt.id).length) return toast('Este horario aún no tiene tramos', true);
+  const canvas = await timetableCanvas(tt);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  // Nombre de archivo con caracteres seguros (algunos navegadores rechazan «º», «ª» o tildes).
+  const safeName = `Horaria - ${tt.name}`
+    .replace(/º/g, 'o').replace(/ª/g, 'a')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9 ._()-]+/g, '').replace(/\s+/g, ' ').trim();
+  const fileName = `${safeName || 'Horaria'}.png`;
+  const file = new File([blob], fileName, { type: 'image/png' });
+  const canShare = Boolean(navigator.canShare && navigator.canShare({ files: [file] }));
+  const url = URL.createObjectURL(blob);
+  const hint = canShare
+    ? isIOS()
+      ? 'Pulsa «Guardar en la galería» y elige «Guardar imagen». También puedes mantener pulsada la imagen.'
+      : 'Pulsa «Guardar en la galería» y elige dónde guardarla: Galería, Fotos, Drive…'
+    : 'La imagen se guardará en tu carpeta de descargas.';
+  openModal(`
+    <div class="modal-head"><h2>Descargar horario</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+    <img class="tt-preview" src="${url}" alt="${esc(`Horario ${tt.name}`)}">
+    <p class="hint" style="margin:12px 0 0">${hint}</p>
+    <div class="modal-foot">
+      ${canShare
+        ? `<button class="btn" id="dl-file">${icon('download')}Descargar</button><button class="btn btn-primary" id="dl-share">Guardar en la galería</button>`
+        : `<button class="btn btn-primary" id="dl-file">${icon('download')}Descargar imagen</button>`}
+    </div>`, (root) => {
+    $('#dl-file', root).onclick = () => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      toast('Imagen descargada');
+    };
+    const share = $('#dl-share', root);
+    if (share) {
+      share.onclick = async () => {
+        try {
+          await navigator.share({ files: [file], title: tt.name });
+        } catch (err) {
+          if (err.name !== 'AbortError') toast('No se pudo abrir el menú para guardar la imagen', true);
+        }
+      };
+    }
   });
 }
 
@@ -649,6 +1050,15 @@ function itemsView() {
     <div class="scroll">${body || (f.type !== 'all' || f.subject ? '<div class="empty"><strong>Nada por aquí</strong>No hay nada pendiente con estos filtros.</div>' : '<div class="empty"><strong>Todo al día</strong>No tienes tareas ni exámenes pendientes.</div>')}</div>
     <button class="fab show-mobile" data-action="newItem" data-type="task" aria-label="Añadir tarea o examen">${icon('plus')}</button>`;
 }
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'tt-select') return;
+  if (e.target.value === '__new') {
+    e.target.value = String(activeTT().id);
+    openTimetableModal(null);
+  } else {
+    setActiveTimetable(Number(e.target.value));
+  }
+});
 document.addEventListener('click', (e) => {
   const b = e.target.closest('#type-filter button');
   if (b) { state.filter.type = b.dataset.type; renderView(); }
@@ -662,7 +1072,8 @@ document.addEventListener('change', (e) => {
    Asignaturas
    ============================================================ */
 function subjectsView() {
-  const hours = (id) => state.schedule.filter((e) => e.subject_id === id && state.slots.some((s) => s.id === e.slot_id)).length;
+  const activeSlots = ttSlots(activeTT().id);
+  const hours = (id) => state.schedule.filter((e) => e.subject_id === id && activeSlots.some((s) => s.id === e.slot_id)).length;
   return `
     <div class="toolbar">
       <h2>Asignaturas</h2>
@@ -749,7 +1160,8 @@ function settingsView() {
     <section class="card">
       <h2>Tramos horarios</h2>
       <p class="hint">Define las horas de clase y los descansos. Cuando termines, pulsa «Guardar cambios».</p>
-      <div id="slots">${state.slots.map((s) => `
+      ${state.timetables.length > 1 ? `<label class="field tt-field"><span>Horario</span><select id="s-tt">${state.timetables.map((t) => `<option value="${t.id}" ${t.id === activeTT().id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>` : ''}
+      <div id="slots">${ttSlots(activeTT().id).map((s) => `
         <div class="slot-row" data-slot="${s.id}">
           <input type="time" name="start_time" value="${s.start_time}" aria-label="Inicio">
           <input type="time" name="end_time" value="${s.end_time}" aria-label="Fin">
@@ -862,14 +1274,17 @@ function bindSettings(root) {
   };
   $('#add-slot', root).onclick = async () => {
     if (!(await savePending())) return;
-    const last = state.slots[state.slots.length - 1];
+    const own = ttSlots(activeTT().id);
+    const last = own[own.length - 1];
     let start = last ? last.end_time : '08:00';
     const [h, m] = start.split(':').map(Number);
     let endMin = Math.min(h * 60 + m + 55, 23 * 60 + 59);
     if (endMin <= h * 60 + m) start = '22:00', endMin = 22 * 60 + 55;
-    const slots = await attempt(() => api('POST', '/slots', { start_time: start, end_time: `${pad(Math.floor(endMin / 60))}:${pad(endMin % 60)}`, label: '' }), 'Tramo añadido');
+    const slots = await attempt(() => api('POST', '/slots', { timetable_id: activeTT().id, start_time: start, end_time: `${pad(Math.floor(endMin / 60))}:${pad(endMin % 60)}`, label: '' }), 'Tramo añadido');
     if (slots) { state.slots = slots; renderView(); }
   };
+  const ttSel = $('#s-tt', root);
+  if (ttSel) ttSel.onchange = async () => { if (await savePending()) setActiveTimetable(Number(ttSel.value)); };
   $('#s-notify', root).onchange = (e) => saveSettings({ email_notifications: e.target.checked });
   $('#s-default-rem', root).onchange = (e) => saveSettings({ default_reminder_minutes: e.target.value === '' ? null : Number(e.target.value) });
   $('#s-digest', root).onchange = (e) => saveSettings({ daily_digest: e.target.checked });
@@ -907,9 +1322,41 @@ function openModal(html, onMount, refreshFn = null) {
   const backdrop = $('.modal-backdrop', root);
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) closeModal(); });
   backdrop.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeModal(); });
+  fitModalToViewport(backdrop);
   onMount?.($('.modal', root));
 }
+
+/*
+ * Con el teclado abierto, el móvil reduce la zona visible pero no la página. La ventana se
+ * ajusta a la zona visible para que su parte de arriba nunca quede fuera de la pantalla.
+ */
+let stopViewportFit = null;
+function fitModalToViewport(backdrop) {
+  stopViewportFit?.();
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const sync = () => {
+    backdrop.style.top = `${vv.offsetTop}px`;
+    backdrop.style.height = `${vv.height}px`;
+    backdrop.style.bottom = 'auto';
+  };
+  sync();
+  vv.addEventListener('resize', sync);
+  vv.addEventListener('scroll', sync);
+  stopViewportFit = () => {
+    vv.removeEventListener('resize', sync);
+    vv.removeEventListener('scroll', sync);
+    stopViewportFit = null;
+  };
+}
+// Al enfocar un campo dentro de la ventana, se desplaza para que quede a la vista.
+document.addEventListener('focusin', (e) => {
+  if (!e.target.closest?.('.modal') || !e.target.matches('input, textarea, select')) return;
+  setTimeout(() => e.target.scrollIntoView({ block: 'nearest' }), 300);
+});
+
 function closeModal() {
+  stopViewportFit?.();
   $('#modal-root').innerHTML = '';
   modalRefresh = null;
   openDayKey = null;
@@ -919,11 +1366,12 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#moda
 /** Detalle de un día: clases + tareas/exámenes. */
 function dayDetail(key, inModal) {
     const date = parseKey(key);
-    const classes = classesOn(date.getDay());
+    const dayTT = timetableForDate(date);
+    const classes = classesOn(date.getDay(), dayTT.id);
     const items = state.items.filter((i) => dateKey(new Date(i.due_at)) === key);
     return `
       <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? `<button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>` : ''}</div>
-      <div class="group-title" style="margin-top:0">Clases</div>
+      <div class="group-title" style="margin-top:0">Clases${state.timetables.length > 1 ? ` <span>· ${esc(dayTT.name)}</span>` : ''}</div>
       ${classes.length ? `<div class="day-classes">${classes.map(({ slot, subject, entry }) => `
         <div class="day-class" style="--c:${subject.color}">
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
@@ -1029,10 +1477,14 @@ function openItemModal(item, defaults = {}) {
         <button type="button" data-type="task">${icon('check')}Tarea</button><button type="button" data-type="exam" class="exam">${icon('exam')}Examen</button>
       </div></div>
       <label class="field"><span>Título</span><input type="text" name="title" maxlength="150" value="${esc(data.title)}" placeholder="Ej.: Ejercicios del tema 3" required></label>
-      <label class="field"><span>Asignatura</span>
-        <select name="subject_id"><option value="">Sin asignatura</option>
-          ${state.subjects.map((s) => `<option value="${s.id}" ${s.id === data.subject_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
-        </select></label>
+      <div class="field"><span>Asignatura</span>
+        <input type="hidden" name="subject_id" value="${data.subject_id ?? ''}">
+        <div class="subject-chips" id="subj-chips">
+          <button type="button" class="schip none ${data.subject_id == null ? 'active' : ''}" data-sid="" title="Sin asignatura" aria-label="Sin asignatura">—</button>
+          ${state.subjects.map((s) => `<button type="button" class="schip ${s.id === data.subject_id ? 'active' : ''}" data-sid="${s.id}" style="--c:${s.color};--ink:${textOn(s.color)}" title="${esc(s.name)}" aria-label="${esc(s.name)}">${esc(shortName(s))}</button>`).join('')}
+        </div>
+        <small class="hint" id="subj-name">${state.subjects.length ? esc(subjectById(data.subject_id)?.name || 'Sin asignatura') : 'Aún no tienes asignaturas. Créalas en la pestaña Asignaturas.'}</small>
+      </div>
       <div class="row">
         <label class="field"><span>Fecha</span><input type="date" name="date" value="${data.date}" required></label>
         <label class="field"><span>Hora</span><input type="time" name="time" value="${data.time}" required></label>
@@ -1094,13 +1546,22 @@ function openItemModal(item, defaults = {}) {
     // Si eliges una asignatura que tienes ese día, propone la hora de su clase.
     const suggestTime = () => {
       if (timeTouched || !form.subject_id.value || !form.date.value) return;
-      const cls = classesOn(parseKey(form.date.value).getDay()).find((c) => c.subject.id === Number(form.subject_id.value));
+      const day = parseKey(form.date.value);
+      const cls = classesOn(day.getDay(), timetableForDate(day).id).find((c) => c.subject.id === Number(form.subject_id.value));
       if (cls) form.time.value = cls.slot.start_time;
     };
     form.time.oninput = () => { timeTouched = true; };
-    form.subject_id.onchange = suggestTime;
+    $('#subj-chips', form).onclick = (e) => {
+      const b = e.target.closest('.schip');
+      if (!b) return;
+      form.subject_id.value = b.dataset.sid;
+      $$('.schip', form).forEach((x) => x.classList.toggle('active', x === b));
+      $('#subj-name', form).textContent = subjectById(Number(b.dataset.sid))?.name || 'Sin asignatura';
+      suggestTime();
+    };
     form.date.onchange = suggestTime;
-    if (!item) setTimeout(() => form.title.focus(), 0);
+    // En el móvil no se abre el teclado solo: desplazaba la ventana y ocultaba su parte de arriba.
+    if (!item && !window.matchMedia('(pointer: coarse)').matches) setTimeout(() => form.title.focus(), 0);
 
     if (!isNew) {
       $('#del-item', form).onclick = async () => {
