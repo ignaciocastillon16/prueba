@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { DEFAULT_SLOTS, TT_BACKGROUNDS } from './db.js';
 import { ITEM_SELECT, attachChecklists, serializeItem } from './items.js';
 import { testEmail } from './emails.js';
+import { testPush } from './push-messages.js';
 
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 const COOKIE = 'sid';
@@ -103,7 +104,7 @@ function createLimiter(max, windowMs) {
   };
 }
 
-export function createApi({ db, mailer, appUrl = '' }) {
+export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   const r = Router();
   const allowLogin = createLimiter(10, 15 * 60 * 1000);
   const allowRegister = createLimiter(20, 60 * 60 * 1000);
@@ -198,12 +199,15 @@ export function createApi({ db, mailer, appUrl = '' }) {
   const uid = (req) => req.user.id;
 
   /* ---------- usuario y ajustes ---------- */
-  r.get('/me', async (req, res) => res.json({ user: publicUser(req.user), mail_configured: mailer.configured }));
+  const pushDevices = async (userId) => (pusher ? pusher.countDevices(userId) : 0);
+  r.get('/me', async (req, res) => res.json({ user: publicUser(req.user), mail_configured: mailer.configured, push_devices: await pushDevices(req.user.id) }));
 
   r.get('/bootstrap', async (req, res) => {
     res.json({
       user: publicUser(req.user),
       mail_configured: mailer.configured,
+      push_available: Boolean(pusher),
+      push_devices: await pushDevices(uid(req)),
       subjects: (await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))),
       slots: await listSlots(uid(req)),
       schedule: await listSchedule(uid(req)),
@@ -264,6 +268,37 @@ export function createApi({ db, mailer, appUrl = '' }) {
       throw new HttpError(502, `No se pudo enviar el correo: ${err.message}`);
     }
     res.json({ ok: true, mail_configured: mailer.configured });
+  });
+
+  /* ---------- notificaciones push ---------- */
+  const requirePush = () => {
+    if (!pusher) throw new HttpError(503, 'Las notificaciones push no están disponibles en este servidor');
+  };
+  r.get('/push/key', async (req, res) => {
+    requirePush();
+    res.json({ publicKey: pusher.publicKey });
+  });
+  r.post('/push/subscribe', async (req, res) => {
+    requirePush();
+    const sub = req.body.subscription;
+    const endpoint = sub?.endpoint;
+    if (typeof endpoint !== 'string' || !/^https:\/\//.test(endpoint) || endpoint.length > 1000) throw bad('La suscripción no es válida');
+    const p256dh = str(sub.keys?.p256dh, 'La clave del dispositivo', { max: 255, required: true });
+    const auth = str(sub.keys?.auth, 'La clave del dispositivo', { max: 255, required: true });
+    await pusher.subscribe(uid(req), { endpoint, keys: { p256dh, auth } }, String(req.headers['user-agent'] || ''));
+    res.json({ ok: true, push_devices: await pushDevices(uid(req)) });
+  });
+  r.post('/push/unsubscribe', async (req, res) => {
+    requirePush();
+    if (typeof req.body.endpoint === 'string') await pusher.unsubscribe(uid(req), req.body.endpoint);
+    res.json({ ok: true, push_devices: await pushDevices(uid(req)) });
+  });
+  r.post('/push/test', async (req, res) => {
+    requirePush();
+    const result = await pusher.sendToUser(uid(req), testPush());
+    if (!result.devices) throw bad('No tienes ningún dispositivo con las notificaciones activadas');
+    if (!result.sent) throw new HttpError(502, 'No se pudo entregar la notificación. Desactívalas y vuelve a activarlas en este dispositivo.');
+    res.json({ ...result, push_devices: await pushDevices(uid(req)) });
   });
 
   /* ---------- asignaturas ---------- */

@@ -438,3 +438,14 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
   .tt-cell.filled:hover { filter: brightness(1.04); }
   .bg-noche .tt-cell:not(.filled):hover { background: rgba(255, 255, 255, .06); }
 }
+
+/* Avisos y notificaciones */
+.sub-title { font-family: var(--font); font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 7px; margin: 22px 0 10px; padding-top: 18px; border-top: 1px solid var(--border); }
+.sub-title .i { width: 16px; height: 16px; color: var(--accent); }
+.settings .card > .sub-title:first-of-type { border-top: none; padding-top: 4px; margin-top: 14px; }
+.push-box .hint { margin: 8px 0 0; }
+.push-state { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--success); }
+.push-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.status.info { background: var(--accent-soft); color: var(--text); }
+.status ol { margin: 6px 0 0; padding-left: 20px; }
+.status ol li { margin: 2px 0; }

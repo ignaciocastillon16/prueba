@@ -10,6 +10,7 @@ Horaria es una aplicación web de horario escolar para usuarios registrados, con
 - **Tramos horarios y días visibles.** En *Ajustes* eliges qué días de la semana aparecen (por ejemplo, de lunes a viernes o también el sábado) y defines las horas de clase y los recreos.
 - **Asignaturas.** Cada una tiene nombre, abreviatura, aula, profesor/a y color propio.
 - **Tareas y exámenes.** Con fecha y hora, asignatura, descripción y lista de comprobación (checklist) para ir marcando los pasos. Hay una vista de lista con vencidas, hoy, próximos 7 días, más adelante y completadas.
+- **Notificaciones en el móvil y el ordenador.** Los recordatorios llegan como notificación aunque la web esté cerrada. Se activan en Ajustes, en cada dispositivo.
 - **Avisos por correo.** Cada tarea o examen puede tener su recordatorio (a la hora, 15 min, 1 h, 1 día, 1 semana antes…). Además existe un resumen diario opcional a la hora que elijas. Hay un botón para enviar un correo de prueba.
 
 ## Probarla en tu ordenador
@@ -73,6 +74,15 @@ En el plan gratuito, Render apaga la web tras 15 minutos sin visitas. Mientras e
 2. Añade una tarea que visite `https://TU-WEB.onrender.com/api/health` cada 10 minutos.
 
 Las 750 horas gratuitas al mes de Render bastan para tener un servicio encendido todo el mes. Un plan de pago de Render no se apaga y no necesita esto.
+
+### Notificaciones push
+
+No hace falta configurar nada. La primera vez que arranca, el servidor crea sus claves de notificaciones y las guarda en la base de datos, así que se mantienen aunque Render se reinicie. Cada persona las activa en **Ajustes → Avisos → Activar notificaciones**.
+
+- **Android y ordenador:** funcionan desde Chrome, Edge, Firefox o Safari.
+- **iPhone y iPad:** hace falta iOS 16.4 o posterior. Primero hay que abrir la web en Safari, pulsar **Compartir → Añadir a pantalla de inicio** y abrir Horaria desde ese icono. La app lo explica en Ajustes.
+
+Si prefieres fijar tú las claves, define `VAPID_PUBLIC_KEY` y `VAPID_PRIVATE_KEY` (se generan con `npx web-push generate-vapid-keys`). Si las cambias, cada dispositivo tendrá que volver a activar las notificaciones.
 
 ### Seguridad de la base de datos
 

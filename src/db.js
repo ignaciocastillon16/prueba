@@ -81,6 +81,21 @@ CREATE TABLE IF NOT EXISTS checklist_items (
   position INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_checklist_item ON checklist_items(item_id);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint_hash TEXT NOT NULL UNIQUE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+CREATE TABLE IF NOT EXISTS app_settings (
+  name TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 // Compatible con MySQL 5.7+, MySQL 8 y MariaDB 10.3+ (lo que ofrece Hostinger).
@@ -168,6 +183,23 @@ const MYSQL_SCHEMA = [
     position INT NOT NULL DEFAULT 0,
     KEY idx_checklist_item (item_id),
     CONSTRAINT fk_checklist_item FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+  ) ${TABLE_OPTS}`,
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    endpoint_hash CHAR(64) NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh VARCHAR(255) NOT NULL,
+    auth VARCHAR(255) NOT NULL,
+    user_agent VARCHAR(255) NOT NULL DEFAULT '',
+    created_at VARCHAR(30) NOT NULL,
+    UNIQUE KEY uq_push_endpoint (endpoint_hash),
+    KEY idx_push_user (user_id),
+    CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ${TABLE_OPTS}`,
+  `CREATE TABLE IF NOT EXISTS app_settings (
+    name VARCHAR(64) NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
   ) ${TABLE_OPTS}`,
 ];
 

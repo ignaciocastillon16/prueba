@@ -1,5 +1,6 @@
 import { ITEM_SELECT, attachChecklists } from './items.js';
 import { reminderEmail, digestEmail } from './emails.js';
+import { reminderPush, digestPush } from './push-messages.js';
 
 /** Fecha (YYYY-MM-DD) y hora locales de `date` en la zona horaria indicada. */
 export function localParts(date, timeZone) {
@@ -11,33 +12,54 @@ export function localParts(date, timeZone) {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
 
-export function createScheduler({ db, mailer, appUrl = '', logger = console }) {
+export function createScheduler({ db, mailer, pusher = null, appUrl = '', logger = console }) {
   let running = false;
 
   async function sendReminders(now) {
     const nowIso = now.toISOString();
     const candidates = (
       await db.all(
-        `${ITEM_SELECT} JOIN users u ON u.id = i.user_id
-         WHERE i.done = 0 AND i.reminder_minutes IS NOT NULL AND i.reminder_sent_at IS NULL
-           AND u.email_notifications = 1 AND i.due_at > ?`,
+        `${ITEM_SELECT}
+         WHERE i.done = 0 AND i.reminder_minutes IS NOT NULL AND i.reminder_sent_at IS NULL AND i.due_at > ?`,
         nowIso
       )
     ).filter((i) => Date.parse(i.due_at) - i.reminder_minutes * 60000 <= now.getTime());
     await attachChecklists(db, candidates);
     for (const item of candidates) {
       const user = await db.get('SELECT * FROM users WHERE id = ?', item.user_id);
-      try {
-        await mailer.send({ to: user.email, ...reminderEmail(item, user, appUrl, now) });
-        await db.run('UPDATE items SET reminder_sent_at = ? WHERE id = ?', nowIso, item.id);
-      } catch (err) {
-        logger.error(`No se pudo enviar el aviso de la tarea ${item.id}:`, err.message);
-      }
+      const { delivered, attempted } = await deliver(user, {
+        email: () => reminderEmail(item, user, appUrl, now),
+        push: () => reminderPush(item, user, now),
+        what: `el aviso de la tarea ${item.id}`,
+      });
+      // Si ningún canal está activo, el aviso queda pendiente por si el usuario activa alguno.
+      if (attempted && delivered) await db.run('UPDATE items SET reminder_sent_at = ? WHERE id = ?', nowIso, item.id);
     }
   }
 
+  /** Envía por correo y por push según lo que tenga activado el usuario. */
+  async function deliver(user, { email, push, what }) {
+    let attempted = 0;
+    let delivered = 0;
+    if (user.email_notifications) {
+      attempted += 1;
+      try {
+        await mailer.send({ to: user.email, ...email() });
+        delivered += 1;
+      } catch (err) {
+        logger.error(`No se pudo enviar por correo ${what}:`, err.message);
+      }
+    }
+    if (pusher) {
+      const r = await pusher.sendToUser(user.id, push());
+      if (r.devices) attempted += 1;
+      if (r.sent) delivered += 1;
+    }
+    return { attempted, delivered };
+  }
+
   async function sendDigests(now) {
-    const users = await db.all('SELECT * FROM users WHERE daily_digest = 1 AND email_notifications = 1');
+    const users = await db.all('SELECT * FROM users WHERE daily_digest = 1');
     for (const user of users) {
       const { date, hour } = localParts(now, user.timezone);
       if (hour < user.digest_hour || user.last_digest_date === date) continue;
@@ -47,12 +69,14 @@ export function createScheduler({ db, mailer, appUrl = '', logger = console }) {
         db,
         await db.all(`${ITEM_SELECT} WHERE i.user_id = ? AND i.done = 0 AND i.due_at >= ? AND i.due_at <= ? ORDER BY i.due_at`, user.id, from, to)
       );
-      try {
-        if (items.length) await mailer.send({ to: user.email, ...digestEmail(items, user, appUrl, now) });
-        await db.run('UPDATE users SET last_digest_date = ? WHERE id = ?', date, user.id);
-      } catch (err) {
-        logger.error(`No se pudo enviar el resumen diario a ${user.id}:`, err.message);
+      if (items.length) {
+        await deliver(user, {
+          email: () => digestEmail(items, user, appUrl, now),
+          push: () => digestPush(items, user, now),
+          what: `el resumen diario del usuario ${user.id}`,
+        });
       }
+      await db.run('UPDATE users SET last_digest_date = ? WHERE id = ?', date, user.id);
     }
   }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { openDb, dbConfigFromEnv } from '../src/db.js';
 import { createApp } from '../src/server.js';
 import { createScheduler } from '../src/scheduler.js';
+import { createPusher, loadVapidKeys } from '../src/push.js';
 
 const sent = [];
 const mailer = { configured: true, async send(msg) { sent.push(msg); } };
@@ -12,15 +13,23 @@ if (testUrl) {
   const { default: mysql } = await import('mysql2/promise');
   const conn = await mysql.createConnection(testUrl);
   await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-  for (const t of ['checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
+  for (const t of ['push_subscriptions', 'app_settings', 'checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
   await conn.end();
 }
 const db = await openDb(testUrl ? dbConfigFromEnv({ DATABASE_URL: testUrl }) : { file: ':memory:' });
+// Envío push simulado: guarda los mensajes; un endpoint con «caducado» responde 410 como haría el servicio real.
+const pushed = [];
+const fakeSend = async (sub, payload, opts) => {
+  if (sub.endpoint.includes('caducado')) throw Object.assign(new Error('Gone'), { statusCode: 410 });
+  pushed.push({ endpoint: sub.endpoint, payload: JSON.parse(payload), opts });
+};
+const keys = await loadVapidKeys(db, {});
+const pusher = createPusher({ db, keys, subject: 'mailto:test@example.com', send: fakeSend, logger: { error() {} } });
 let server;
 let base;
 
 before(async () => {
-  server = createApp({ db, mailer, appUrl: 'http://test' }).listen(0);
+  server = createApp({ db, mailer, pusher, appUrl: 'http://test' }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -201,4 +210,56 @@ test('ruta de salud', async () => {
   const res = await fetch(base + '/api/health');
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
+});
+
+test('notificaciones push', async () => {
+  // Las claves VAPID se guardan y se reutilizan
+  assert.equal((await loadVapidKeys(db, {})).publicKey, keys.publicKey);
+
+  const c = client();
+  await c('POST', '/auth/register', { name: 'Pau', email: 'pau@x.com', password: 'secreto123', timezone: 'Europe/Madrid' });
+  assert.equal((await c('GET', '/push/key')).body.publicKey, keys.publicKey);
+  assert.equal((await c('POST', '/push/test')).status, 400, 'sin dispositivos');
+  assert.equal((await c('POST', '/push/subscribe', { subscription: { endpoint: 'http://inseguro', keys: { p256dh: 'a', auth: 'b' } } })).status, 400);
+
+  const sub = (endpoint) => ({ subscription: { endpoint, keys: { p256dh: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U', auth: 'tBHItJI5svbpez7KI4CCXg' } } });
+  assert.equal((await c('POST', '/push/subscribe', sub('https://push.example.com/movil'))).body.push_devices, 1);
+  assert.equal((await c('POST', '/push/subscribe', sub('https://push.example.com/movil'))).body.push_devices, 1, 'no se duplica');
+  await c('POST', '/push/subscribe', sub('https://push.example.com/caducado'));
+  assert.equal((await c('GET', '/me')).body.push_devices, 2);
+
+  pushed.length = 0;
+  const t = await c('POST', '/push/test');
+  assert.equal(t.status, 200);
+  assert.equal(t.body.sent, 1);
+  assert.equal(t.body.push_devices, 1, 'el dispositivo caducado se borra');
+  assert.equal(pushed[0].payload.title, 'Horaria');
+  assert.equal(pushed[0].opts.vapidDetails.publicKey, keys.publicKey);
+
+  // Otro usuario no puede borrar la suscripción ajena
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro@x.com', password: 'secreto123' });
+  await otro('POST', '/push/unsubscribe', { endpoint: 'https://push.example.com/movil' });
+  assert.equal((await c('GET', '/me')).body.push_devices, 1);
+
+  // Recordatorio solo por push (correo desactivado)
+  await c('PUT', '/me/settings', { email_notifications: false });
+  const now = new Date('2026-10-05T10:00:00Z');
+  await c('POST', '/items', { type: 'exam', title: 'Examen push', due_at: new Date(now.getTime() + 30 * 60000).toISOString(), reminder_minutes: 60 });
+  sent.length = 0;
+  pushed.length = 0;
+  const scheduler = createScheduler({ db, mailer, pusher, appUrl: 'http://test', logger: { log() {}, error() {} } });
+  await scheduler.tick(now);
+  assert.equal(sent.filter((m) => m.to === 'pau@x.com').length, 0, 'sin correo');
+  const mine = pushed.filter((p) => p.endpoint.endsWith('/movil'));
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].payload.title, 'Examen push');
+  assert.match(mine[0].payload.body, /^Examen, dentro de 30 minutos/);
+  pushed.length = 0;
+  await scheduler.tick(now);
+  assert.equal(pushed.filter((p) => p.endpoint.endsWith('/movil')).length, 0, 'no se repite');
+
+  // Al darse de baja, deja de recibir
+  await c('POST', '/push/unsubscribe', { endpoint: 'https://push.example.com/movil' });
+  assert.equal((await c('GET', '/me')).body.push_devices, 0);
 });

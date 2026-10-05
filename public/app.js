@@ -16,7 +16,7 @@ const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const DAY_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const DAY_LONG = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const REMINDERS = [
-  [null, 'Sin aviso por correo'], [0, 'A la hora exacta'], [15, '15 minutos antes'], [30, '30 minutos antes'],
+  [null, 'Sin aviso'], [0, 'A la hora exacta'], [15, '15 minutos antes'], [30, '30 minutos antes'],
   [60, '1 hora antes'], [120, '2 horas antes'], [180, '3 horas antes'], [720, '12 horas antes'], [1440, '1 día antes'],
   [2880, '2 días antes'], [4320, '3 días antes'], [10080, '1 semana antes'],
 ];
@@ -160,6 +160,8 @@ async function loadAll() {
   const [boot, items] = await Promise.all([api('GET', '/bootstrap'), api('GET', '/items')]);
   state.user = boot.user;
   state.mailConfigured = boot.mail_configured;
+  state.pushAvailable = boot.push_available;
+  state.pushDevices = boot.push_devices;
   state.subjects = boot.subjects;
   state.slots = boot.slots;
   state.schedule = boot.schedule;
@@ -248,6 +250,7 @@ function renderShell() {
     if (b) location.hash = b.dataset.view;
   };
   $('#logout').onclick = async () => {
+    await forgetThisDevice();
     await api('POST', '/auth/logout').catch(() => {});
     state.user = null;
     renderAuth('login');
@@ -599,7 +602,7 @@ function itemCard(item) {
         ${s ? `<span><span class="dot" style="--c:${s.color}"></span> ${esc(s.name)}</span>` : ''}
         <span>${icon('clock')}${esc(fmtDateTime(d))}</span>
         <span class="${overdue ? 'overdue' : ''}">${overdue ? 'Vencida ' : ''}${esc(relative(d))}</span>
-        ${item.reminder_minutes !== null ? `<span title="Aviso por correo: ${esc(rem ? rem[1] : `${item.reminder_minutes} min antes`)}">${item.reminder_sent ? icon('sent') : icon('bell')}</span>` : ''}
+        ${item.reminder_minutes !== null ? `<span title="Aviso: ${esc(rem ? rem[1] : `${item.reminder_minutes} min antes`)}">${item.reminder_sent ? icon('sent') : icon('bell')}</span>` : ''}
       </div>
       <h3 data-edit="${item.id}">${esc(item.title)}</h3>
       ${item.description ? `<p class="desc">${esc(item.description)}</p>` : ''}
@@ -763,20 +766,27 @@ function settingsView() {
     </section>
 
     <section class="card">
-      <h2>Avisos por correo</h2>
-      <p class="hint">Los avisos se envían a <b>${esc(u.email)}</b>.</p>
+      <h2>Avisos</h2>
+      <p class="hint">Recibe los recordatorios de tus tareas y exámenes como notificación, por correo o de las dos formas.</p>
+
+      <h3 class="sub-title">${icon('bell')}Notificaciones en este dispositivo</h3>
+      <div id="push-box" class="push-box"><span class="hint">Comprobando…</span></div>
+
+      <h3 class="sub-title">${icon('mail')}Correo</h3>
       ${state.mailConfigured ? '' : `<div class="status warn">${icon('alert')}<span>El servidor todavía no tiene configurado el envío de correo (SMTP). Los avisos se registrarán en la consola del servidor hasta que se configure.</span></div>`}
-      <label class="check-line"><input type="checkbox" id="s-notify" ${u.email_notifications ? 'checked' : ''}> Recibir recordatorios de tareas y exámenes</label>
+      <label class="check-line"><input type="checkbox" id="s-notify" ${u.email_notifications ? 'checked' : ''}><span>Enviar los avisos también a <b>${esc(u.email)}</b></span></label>
+      <button class="btn btn-sm" id="test-email">${icon('mail')}Enviar correo de prueba</button>
+
+      <h3 class="sub-title">${icon('clock')}Cuándo avisar</h3>
       <label class="field"><span>Aviso por defecto para nuevas tareas y exámenes</span>
         <select id="s-default-rem">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === u.default_reminder_minutes ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="check-line"><input type="checkbox" id="s-digest" ${u.daily_digest ? 'checked' : ''}> Enviarme un resumen diario con lo pendiente de los próximos 7 días</label>
+      <label class="check-line"><input type="checkbox" id="s-digest" ${u.daily_digest ? 'checked' : ''}> Resumen diario con lo pendiente de los próximos 7 días</label>
       <div class="row">
         <label class="field"><span>Hora del resumen</span>
           <select id="s-digest-hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === u.digest_hour ? 'selected' : ''}>${pad(h)}:00</option>`).join('')}</select></label>
         <label class="field"><span>Zona horaria</span><input type="text" id="s-tz" value="${esc(u.timezone)}" list="tz-list"></label>
       </div>
       <datalist id="tz-list">${(Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : []).map((z) => `<option value="${z}">`).join('')}</datalist>
-      <button class="btn" id="test-email">${icon('mail')}Enviar correo de prueba</button>
     </section>
 
     <section class="card">
@@ -871,6 +881,7 @@ function bindSettings(root) {
       $('.userbox .avatar').textContent = initials(state.user.name);
     }
   };
+  renderPushBox();
   $('#test-email', root).onclick = async (e) => {
     e.target.disabled = true;
     const r = await attempt(() => api('POST', '/me/test-email'));
@@ -1026,9 +1037,9 @@ function openItemModal(item, defaults = {}) {
         <label class="field"><span>Fecha</span><input type="date" name="date" value="${data.date}" required></label>
         <label class="field"><span>Hora</span><input type="time" name="time" value="${data.time}" required></label>
       </div>
-      <label class="field"><span>Aviso por correo</span>
+      <label class="field"><span>Aviso</span>
         <select name="reminder">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === data.reminder_minutes ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        ${state.user.email_notifications ? '' : '<small class="hint">Tienes los avisos por correo desactivados en Ajustes.</small>'}
+        ${state.user.email_notifications || state.pushDevices ? '' : '<small class="hint">No tienes activado ningún aviso. Actívalos en Ajustes, por correo o con notificaciones.</small>'}
       </label>
       <label class="field"><span>Descripción / notas</span><textarea name="description" maxlength="5000" placeholder="Temas que entran, páginas, materiales…">${esc(data.description)}</textarea></label>
       <div class="field"><span>Checklist</span>
@@ -1136,12 +1147,133 @@ function openItemModal(item, defaults = {}) {
 }
 
 /* ============================================================
+   Notificaciones push
+   ============================================================ */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function base64UrlToBytes(b64) {
+  const padded = (b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+}
+
+async function currentSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function enablePush() {
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    throw new Error(permission === 'denied' ? 'Has bloqueado las notificaciones para Horaria.' : 'No se ha dado permiso para mostrar notificaciones.');
+  }
+  const { publicKey } = await api('GET', '/push/key');
+  const reg = await navigator.serviceWorker.ready;
+  const key = base64UrlToBytes(publicKey);
+  let sub = await reg.pushManager.getSubscription();
+  // Si la suscripción se hizo con otra clave del servidor, se renueva.
+  const oldKey = sub?.options?.applicationServerKey;
+  if (sub && oldKey && new Uint8Array(oldKey).toString() !== key.toString()) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  const r = await api('POST', '/push/subscribe', { subscription: sub.toJSON() });
+  state.pushDevices = r.push_devices;
+}
+
+async function disablePush() {
+  const sub = await currentSubscription();
+  if (!sub) return;
+  const r = await api('POST', '/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => null);
+  await sub.unsubscribe().catch(() => {});
+  if (r) state.pushDevices = r.push_devices;
+}
+
+/** Al cerrar sesión, este dispositivo deja de recibir las notificaciones de la cuenta. */
+async function forgetThisDevice() {
+  try {
+    const sub = await currentSubscription();
+    if (sub) await api('POST', '/push/unsubscribe', { endpoint: sub.endpoint });
+  } catch {
+    /* sin conexión: el servidor la borrará cuando deje de ser válida */
+  }
+}
+
+/** Al abrir la app, vuelve a asociar la suscripción de este dispositivo a la cuenta actual. */
+async function syncPushSubscription() {
+  if (!state.pushAvailable || !pushSupported() || Notification.permission !== 'granted') return;
+  try {
+    const sub = await currentSubscription();
+    if (sub) state.pushDevices = (await api('POST', '/push/subscribe', { subscription: sub.toJSON() })).push_devices;
+  } catch {
+    /* no es grave: se reintenta la próxima vez */
+  }
+}
+
+async function renderPushBox() {
+  const box = $('#push-box');
+  if (!box) return;
+  const others = (n) => (n > 0 ? `<p class="hint">Recibes notificaciones en ${plural(n, 'dispositivo', 'dispositivos')}.</p>` : '');
+  if (!state.pushAvailable) {
+    box.innerHTML = '<p class="hint">Las notificaciones no están disponibles en este servidor.</p>';
+    return;
+  }
+  if (!pushSupported()) {
+    box.innerHTML = isIOS() && !isStandalone()
+      ? `<div class="status info">${icon('alert')}<div><b>En iPhone, primero instala Horaria.</b><ol>
+          <li>Abre esta página en Safari.</li>
+          <li>Pulsa el botón Compartir y elige «Añadir a pantalla de inicio».</li>
+          <li>Abre Horaria desde el icono nuevo y vuelve a esta pantalla.</li></ol></div></div>${others(state.pushDevices)}`
+      : `<p class="hint">Este navegador no admite notificaciones. Prueba con Chrome, Edge, Firefox o Safari actualizados.</p>${others(state.pushDevices)}`;
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    box.innerHTML = `<div class="status warn">${icon('alert')}<span>Has bloqueado las notificaciones para Horaria. Permítelas en los ajustes del navegador (o del móvil) y recarga la página.</span></div>${others(state.pushDevices)}`;
+    return;
+  }
+  const sub = Notification.permission === 'granted' ? await currentSubscription() : null;
+  if (sub) {
+    box.innerHTML = `<div class="push-state on">${icon('check')}<span>Activadas en este dispositivo.</span></div>
+      ${state.pushDevices > 1 ? others(state.pushDevices) : ''}
+      <div class="push-actions"><button class="btn btn-sm" id="push-test">${icon('bell')}Enviar notificación de prueba</button>
+      <button class="btn btn-sm btn-ghost" id="push-off">Desactivar</button></div>`;
+  } else {
+    box.innerHTML = `<p class="hint" style="margin:0 0 10px">Te avisaremos en este ${isMobile() ? 'móvil' : 'ordenador'} aunque tengas Horaria cerrada.</p>
+      <button class="btn btn-primary" id="push-on">${icon('bell')}Activar notificaciones</button>${others(state.pushDevices)}`;
+  }
+  const busy = (b, fn) => async () => {
+    b.disabled = true;
+    try {
+      await fn();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    b.disabled = false;
+    renderPushBox();
+  };
+  const on = $('#push-on', box);
+  if (on) on.onclick = busy(on, async () => { await enablePush(); toast('Notificaciones activadas'); });
+  const off = $('#push-off', box);
+  if (off) off.onclick = busy(off, async () => { await disablePush(); toast('Notificaciones desactivadas en este dispositivo'); });
+  const test = $('#push-test', box);
+  if (test) test.onclick = busy(test, async () => { await api('POST', '/push/test'); toast('Notificación enviada'); });
+}
+
+/* ============================================================
    Arranque
    ============================================================ */
 async function start() {
   await loadAll();
   renderShell();
   renderView();
+  syncPushSubscription();
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
 
 // Cuando terminan de cargar las fuentes, se reajustan los nombres del horario.

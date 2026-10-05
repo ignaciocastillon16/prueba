@@ -3,6 +3,7 @@ import { openDb, dbConfigFromEnv } from './db.js';
 import { createMailer } from './mailer.js';
 import { createScheduler } from './scheduler.js';
 import { createApp } from './server.js';
+import { createPusher, loadVapidKeys, vapidSubject } from './push.js';
 
 if (fs.existsSync('.env')) process.loadEnvFile('.env');
 
@@ -24,12 +25,13 @@ try {
 }
 
 const mailer = createMailer();
+const pusher = createPusher({ db, keys: await loadVapidKeys(db), subject: vapidSubject(process.env, appUrl) });
 const trustProxy = process.env.TRUST_PROXY ? process.env.TRUST_PROXY === 'true' : Boolean(process.env.RENDER);
-const app = createApp({ db, mailer, appUrl, trustProxy });
+const app = createApp({ db, mailer, pusher, appUrl, trustProxy });
 
 app.listen(port, () => {
   console.log(`Horaria escuchando en ${appUrl} (base de datos: ${dbConfig.mysql ? 'MySQL' : 'SQLite'})`);
   if (!mailer.configured) console.log('Aviso: SMTP no configurado: los correos se mostrarán en la consola. Revisa el archivo .env.');
 });
 
-createScheduler({ db, mailer, appUrl }).start(Number(process.env.REMINDER_INTERVAL_MS || 60000));
+createScheduler({ db, mailer, pusher, appUrl }).start(Number(process.env.REMINDER_INTERVAL_MS || 60000));
