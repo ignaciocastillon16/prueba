@@ -60,7 +60,7 @@ Si pagas un plan de Render, también puedes usar el correo de Hostinger con `smt
 | `SMTP_PASS` | La clave SMTP de Brevo |
 | `MAIL_FROM` | `Mi Horario <tu-correo-verificado@ejemplo.com>` |
 
-4. Pulsa **Apply**. Cuando termine, la web estará en `https://mi-horario.onrender.com` o similar.
+4. Pulsa **Apply**. Cuando termine, la web estará en `https://horaria.onrender.com` o similar.
 5. Entra, crea tu cuenta y pulsa **Ajustes → Enviar correo de prueba**.
 
 Si la conexión a la base de datos falla, el registro de Render (**Logs**) muestra el motivo exacto.

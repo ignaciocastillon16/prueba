@@ -2,7 +2,7 @@
 # Los valores con "sync: false" te los pedirá Render al crear el servicio.
 services:
   - type: web
-    name: mi-horario
+    name: horaria
     runtime: node
     plan: free
     region: frankfurt
