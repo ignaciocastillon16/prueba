@@ -1,0 +1,25 @@
+import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createApi } from './api.js';
+
+const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+export function createApp({ db, mailer, appUrl = '', trustProxy = false }) {
+  const app = express();
+  app.disable('x-powered-by');
+  if (trustProxy) app.set('trust proxy', 1);
+  app.use((req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'same-origin',
+      'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'",
+    });
+    next();
+  });
+  app.use('/api', createApi({ db, mailer, appUrl }));
+  app.use(express.static(publicDir, { index: 'index.html' }));
+  app.use((req, res, next) => (req.method === 'GET' ? res.sendFile(path.join(publicDir, 'index.html')) : next()));
+  return app;
+}
