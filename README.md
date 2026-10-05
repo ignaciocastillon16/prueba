@@ -1,6 +1,6 @@
-# 📚 Mi Horario
+# Horaria
 
-Aplicación web de horario escolar para usuarios registrados, con calendario mensual, horario semanal, tareas y exámenes con checklist y avisos por correo.
+Horaria es una aplicación web de horario escolar para usuarios registrados, con calendario mensual, horario semanal, tareas y exámenes con checklist y avisos por correo.
 
 ## Funciones
 
@@ -58,7 +58,7 @@ Si pagas un plan de Render, también puedes usar el correo de Hostinger con `smt
 | `MYSQL_PASSWORD` | La contraseña de ese usuario |
 | `SMTP_USER` | El usuario SMTP de Brevo |
 | `SMTP_PASS` | La clave SMTP de Brevo |
-| `MAIL_FROM` | `Mi Horario <tu-correo-verificado@ejemplo.com>` |
+| `MAIL_FROM` | `Horaria <tu-correo-verificado@ejemplo.com>` |
 
 4. Pulsa **Apply**. Cuando termine, la web estará en `https://horaria.onrender.com` o similar.
 5. Entra, crea tu cuenta y pulsa **Ajustes → Enviar correo de prueba**.
@@ -97,4 +97,5 @@ Estructura:
 | `src/emails.js` | Plantillas de los correos |
 | `src/db.js` | Conexión y tablas de la base de datos (MySQL o SQLite) |
 | `public/` | Interfaz web (HTML, CSS y JavaScript sin frameworks) |
+| `public/fonts/` | Tipografías Figtree y Fraunces (licencia SIL Open Font License) |
 | `test/` | Pruebas automáticas |

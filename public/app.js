@@ -20,7 +20,41 @@ const REMINDERS = [
   [60, '1 hora antes'], [120, '2 horas antes'], [180, '3 horas antes'], [720, '12 horas antes'], [1440, '1 día antes'],
   [2880, '2 días antes'], [4320, '3 días antes'], [10080, '1 semana antes'],
 ];
-const PALETTE = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#ec4899', '#f43f5e', '#64748b', '#78350f'];
+const PALETTE = ['#c8553d', '#e07b3c', '#e0a43a', '#b5a032', '#6f9a48', '#3f8c66', '#2e8a8a', '#3a7aa6', '#4f68b0', '#7461a6', '#a1568f', '#c45a74', '#7c8a8f', '#8a6a4c'];
+
+/* Iconos de línea (24×24) */
+const ICONS = {
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  grid: '<rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><path d="M3.5 9.5h17M3.5 15h17M9.5 3.5v17"/>',
+  check: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12.4 2.8 2.8L16.3 9.5"/>',
+  book: '<path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v15H7.5A2.5 2.5 0 0 0 5 20.5v-15Z"/><path d="M5 20.5A2.5 2.5 0 0 0 7.5 23H19v-5"/><path d="M9 7.5h6"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  left: '<path d="m14.5 6-6 6 6 6"/>',
+  right: '<path d="m9.5 6 6 6-6 6"/>',
+  pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.3"/>',
+  user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/>',
+  sent: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m8.5 12 2.5 2.5 4.5-4.5"/>',
+  pencil: '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17Z"/><path d="m14.5 7.5 3 3"/>',
+  trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  cup: '<path d="M5 9h11v4.5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5Z"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8.5 3.5V6M12 3.5V6"/>',
+  alert: '<path d="M10.3 4.6 3 17.5A2 2 0 0 0 4.7 20.5h14.6a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 17h.01"/>',
+  logout: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="M9.5 16 5.5 12l4-4M5.5 12H15"/>',
+  exam: '<path d="M7 3h7.5L19 7.5V21H7Z"/><path d="M14 3v5h5M10 12.5h5.5M10 16.5h5.5"/>',
+};
+const icon = (name, cls = '') =>
+  `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M10.5 9.5v13M21.5 9.5v13M10.5 16h11" fill="none" stroke="var(--logo-ink, #fff)" stroke-width="3" stroke-linecap="round"/><circle cx="25" cy="7.5" r="3.2" fill="var(--warm)"/></svg>`;
+const brand = () => `<div class="brand">${LOGO}<span class="wordmark">Horaria</span></div>`;
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function initials(name) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
 
 const fmtLongDate = (d) => d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
 const fmtDateTime = (d) => d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }) + ' · ' + timeOf(d);
@@ -146,19 +180,33 @@ function refresh() {
 function renderAuth(mode) {
   const isLogin = mode === 'login';
   $('#app').innerHTML = `
+    <div class="auth-wrap">
+    <aside class="auth-brand">
+      ${brand()}
+      <h1>El curso entero, en una sola vista.</h1>
+      <ul>
+        <li>${icon('grid')}<span>Tu horario semanal con aulas, profesorado y un color para cada asignatura.</span></li>
+        <li>${icon('check')}<span>Tareas y exámenes con su lista de pasos para ir tachando.</span></li>
+        <li>${icon('mail')}<span>Un recordatorio en tu correo antes de cada entrega.</span></li>
+      </ul>
+    </aside>
+    <div class="auth-side">
     <form class="auth" id="auth-form" novalidate>
-      <h1>📚 Mi Horario</h1>
-      <p class="sub">${isLogin ? 'Inicia sesión para ver tu horario.' : 'Crea tu cuenta gratuita.'}</p>
+      ${brand()}
+      <h2>${isLogin ? 'Hola de nuevo' : 'Crea tu cuenta'}</h2>
+      <p class="sub">${isLogin ? 'Entra para ver tu semana.' : 'Solo necesitas un correo y una contraseña.'}</p>
       ${isLogin ? '' : '<label class="field"><span>Nombre</span><input type="text" name="name" autocomplete="name" required maxlength="80"></label>'}
       <label class="field"><span>Correo electrónico</span><input type="email" name="email" autocomplete="email" required></label>
       <label class="field"><span>Contraseña</span><input type="password" name="password" autocomplete="${isLogin ? 'current-password' : 'new-password'}" required minlength="8">
         ${isLogin ? '' : '<small class="hint">Mínimo 8 caracteres.</small>'}</label>
       <div class="error" id="auth-error"></div>
       <button class="btn btn-primary" type="submit">${isLogin ? 'Entrar' : 'Crear cuenta'}</button>
-      <div class="switch">${isLogin ? '¿No tienes cuenta? <a data-mode="register">Regístrate</a>' : '¿Ya tienes cuenta? <a data-mode="login">Inicia sesión</a>'}</div>
-    </form>`;
+      <div class="switch">${isLogin ? '¿Aún no tienes cuenta? <a data-mode="register">Regístrate</a>' : '¿Ya tienes cuenta? <a data-mode="login">Inicia sesión</a>'}</div>
+    </form>
+    </div>
+    </div>`;
   $('.switch a').onclick = (e) => renderAuth(e.target.dataset.mode);
-  $('#auth-form input').focus();
+  if (!window.matchMedia('(pointer: coarse)').matches) $('#auth-form input').focus();
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target));
@@ -179,19 +227,19 @@ function renderAuth(mode) {
    Estructura principal
    ============================================================ */
 const VIEWS = [
-  ['month', '📅', 'Mes', 'Mes'],
-  ['week', '🗓', 'Horario', 'Horario'],
-  ['items', '✅', 'Tareas y exámenes', 'Tareas'],
-  ['subjects', '📘', 'Asignaturas', 'Materias'],
-  ['settings', '⚙️', 'Ajustes', 'Ajustes'],
+  ['month', 'calendar', 'Mes', 'Mes'],
+  ['week', 'grid', 'Horario', 'Horario'],
+  ['items', 'check', 'Tareas y exámenes', 'Tareas'],
+  ['subjects', 'book', 'Asignaturas', 'Materias'],
+  ['settings', 'sliders', 'Ajustes', 'Ajustes'],
 ];
 
 function renderShell() {
   $('#app').innerHTML = `
     <header class="topbar">
-      <div class="brand">📚 Mi Horario</div>
-      <nav class="tabs">${VIEWS.map(([id, icon, label, short]) => `<button data-view="${id}"><span class="ic">${icon}</span><span class="long">${label}</span><span class="short">${short}</span></button>`).join('')}</nav>
-      <div class="userbox"><span class="name">${esc(state.user.name)}</span><button class="btn btn-sm" id="logout">Salir</button></div>
+      ${brand()}
+      <nav class="tabs">${VIEWS.map(([id, ic, label, short]) => `<button data-view="${id}">${icon(ic)}<span class="long">${label}</span><span class="short">${short}</span></button>`).join('')}</nav>
+      <div class="userbox"><span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span><span class="name">${esc(state.user.name)}</span><button class="icon-btn" id="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${icon('logout')}</button></div>
     </header>
     <main id="view"></main>`;
   $('.tabs').onclick = (e) => {
@@ -228,13 +276,13 @@ function bindViewEvents(root) {
     const t = e.target;
     if (t.dataset.toggle) {
       const item = await attempt(() => api('PUT', `/items/${t.dataset.toggle}`, { done: t.checked }));
-      if (item) { upsertItem(item); refresh(); if (item.done) toast('¡Hecho! ✅'); } else t.checked = !t.checked;
+      if (item) { upsertItem(item); refresh(); if (item.done) toast('Marcada como hecha'); } else t.checked = !t.checked;
     } else if (t.dataset.check) {
       const item = await attempt(() => api('PATCH', `/checklist/${t.dataset.check}`, { done: t.checked }));
       if (item) {
         upsertItem(item);
         refresh();
-        if (!item.done && item.checklist.length && item.checklist.every((c) => c.done)) toast('Has completado toda la lista. Puedes marcarla como hecha.');
+        if (!item.done && item.checklist.length && item.checklist.every((c) => c.done)) toast('Lista completa. Ya puedes marcarla como hecha.');
       } else t.checked = !t.checked;
     }
   });
@@ -294,7 +342,7 @@ function itemChip(item) {
   return `<div class="chip-item ${item.type} ${item.done ? 'done' : ''}" data-edit="${item.id}" style="--c:${s ? s.color : 'var(--muted)'}"
       title="${esc(`${item.type === 'exam' ? 'Examen' : 'Tarea'}: ${item.title}${s ? ` (${s.name})` : ''} · ${timeOf(d)}`)}">
     <input type="checkbox" data-toggle="${item.id}" ${item.done ? 'checked' : ''} aria-label="Marcar como hecha">
-    <span class="t">${item.type === 'exam' ? '📝 ' : ''}${timeOf(d)} ${esc(item.title)}</span>
+    <span class="t"><time>${timeOf(d)}</time>${esc(item.title)}</span>
     ${item.checklist.length ? `<span class="prog">${doneCount}/${item.checklist.length}</span>` : ''}
   </div>`;
 }
@@ -355,23 +403,23 @@ function monthView() {
     }
     const classes = state.showClasses ? classCache.get(d.getDay()) : [];
     return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''}" data-date="${k}">
-      <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea">+</button></div>
-      ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="background:${g.subject.color};color:${textOn(g.subject.color)}" title="${esc(`${g.start}–${g.end} ${g.subject.name}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
+      <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea" aria-label="Añadir tarea">${icon('plus')}</button></div>
+      ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="--c:${g.subject.color}" title="${esc(`${g.start}–${g.end} ${g.subject.name}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
       <div class="cell-items">${(byDay.get(k) || []).map(itemChip).join('')}</div>
     </div>`;
   });
 
   return `
     <div class="toolbar month-toolbar">
-      <button class="btn" data-action="prev" title="Mes anterior" aria-label="Mes anterior">‹</button>
+      <button class="btn" data-action="prev" title="Mes anterior" aria-label="Mes anterior">${icon('left')}</button>
       <h2>${esc(title)}</h2>
-      <button class="btn" data-action="next" title="Mes siguiente" aria-label="Mes siguiente">›</button>
+      <button class="btn" data-action="next" title="Mes siguiente" aria-label="Mes siguiente">${icon('right')}</button>
       <button class="btn" data-action="today">Hoy</button>
-      <span class="legend hide-mobile"><span>📝 ${pendingExams} examen(es)</span><span>✅ ${pendingTasks} tarea(s) pendientes</span></span>
+      <span class="legend hide-mobile"><span><i class="legend-dot exam"></i>${plural(pendingExams, 'examen', 'exámenes')}</span><span><i class="legend-dot"></i>${plural(pendingTasks, 'tarea pendiente', 'tareas pendientes')}</span></span>
       <span class="spacer"></span>
       <label class="toggle hide-mobile"><input type="checkbox" id="toggle-classes" ${state.showClasses ? 'checked' : ''}> Clases</label>
-      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">+ Tarea</button>
-      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">+ Examen</button>
+      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">${icon('plus')}Tarea</button>
+      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">${icon('plus')}Examen</button>
     </div>
     ${mobile ? '<div class="scroll month-scroll">' : ''}
     <div class="month-grid ${mobile ? 'compact' : ''}" style="grid-template-columns:repeat(${days.length},minmax(0,1fr));grid-template-rows:auto repeat(${weeks.length},minmax(0,1fr))">
@@ -404,7 +452,7 @@ function weekView() {
   for (const slot of state.slots) {
     html += `<div class="tt-time"><b>${slot.start_time}</b><span>${slot.end_time}</span>${slot.label && !slot.is_break ? `<span class="hide-mobile">${esc(slot.label)}</span>` : ''}</div>`;
     if (slot.is_break) {
-      html += `<div class="tt-break" style="grid-column:2 / span ${days.length}">☕ ${esc(slot.label || 'Descanso')}</div>`;
+      html += `<div class="tt-break" style="grid-column:2 / span ${days.length}">${icon('cup')}${esc(slot.label || 'Descanso')}</div>`;
       continue;
     }
     for (const d of days) {
@@ -413,23 +461,23 @@ function weekView() {
       const isNow = d === todayDow && nowTime >= slot.start_time && nowTime < slot.end_time;
       if (s) {
         const room = entry.room_override || s.room;
-        html += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}" style="background:${s.color};color:${textOn(s.color)}" title="${esc(`${s.name}${room ? ` · Aula ${room}` : ''}${s.teacher ? ` · ${s.teacher}` : ''}`)}">
+        html += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}" style="--c:${s.color}" title="${esc(`${s.name}${room ? ` · Aula ${room}` : ''}${s.teacher ? ` · ${s.teacher}` : ''}`)}">
           <div class="n"><span class="long">${esc(s.name)}</span><span class="short">${esc(shortName(s))}</span></div>
-          ${room ? `<div class="d">📍 ${esc(room)}</div>` : ''}
-          ${s.teacher ? `<div class="d">👤 ${esc(s.teacher)}</div>` : ''}
+          ${room ? `<div class="d">${icon('pin')}${esc(room)}</div>` : ''}
+          ${s.teacher ? `<div class="d">${icon('user')}${esc(s.teacher)}</div>` : ''}
         </div>`;
       } else {
-        html += `<div class="tt-cell ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}"><div class="plus">+</div></div>`;
+        html += `<div class="tt-cell ${isNow ? 'now' : ''}" data-slot="${slot.id}" data-day="${d}"><div class="plus">${icon('plus')}</div></div>`;
       }
     }
   }
   return `
     <div class="toolbar">
       <h2>Horario semanal</h2>
-      <span class="hint hide-mobile">Pulsa una celda para asignar una asignatura.</span>
+      <span class="hint hide-mobile">Pulsa una celda para cambiar la asignatura.</span>
       <span class="spacer"></span>
-      <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">⚙️<span class="long"> Tramos y días</span></button>
-      <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">📘<span class="long"> Asignaturas</span></button>
+      <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">${icon('sliders')}<span class="long">Tramos y días</span></button>
+      <button class="btn" data-action="goto" data-view="subjects" title="Asignaturas">${icon('book')}<span class="long">Asignaturas</span></button>
     </div>
     <div class="tt-grid" style="grid-template-columns:${isMobile() ? '40px' : 'minmax(48px,80px)'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${html}</div>`;
 }
@@ -449,9 +497,9 @@ function itemCard(item) {
       <div class="meta">
         <span class="badge ${item.type}">${item.type === 'exam' ? 'Examen' : 'Tarea'}</span>
         ${s ? `<span><span class="dot" style="--c:${s.color}"></span> ${esc(s.name)}</span>` : ''}
-        <span>🗓 ${esc(fmtDateTime(d))}</span>
-        <span class="${overdue ? 'overdue' : ''}">${overdue ? '⚠️ Vencida ' : ''}${esc(relative(d))}</span>
-        ${item.reminder_minutes !== null ? `<span title="Aviso por correo: ${esc(rem ? rem[1] : `${item.reminder_minutes} min antes`)}">${item.reminder_sent ? '📨' : '🔔'}</span>` : ''}
+        <span>${icon('clock')}${esc(fmtDateTime(d))}</span>
+        <span class="${overdue ? 'overdue' : ''}">${overdue ? 'Vencida ' : ''}${esc(relative(d))}</span>
+        ${item.reminder_minutes !== null ? `<span title="Aviso por correo: ${esc(rem ? rem[1] : `${item.reminder_minutes} min antes`)}">${item.reminder_sent ? icon('sent') : icon('bell')}</span>` : ''}
       </div>
       <h3 data-edit="${item.id}">${esc(item.title)}</h3>
       ${item.description ? `<p class="desc">${esc(item.description)}</p>` : ''}
@@ -459,7 +507,7 @@ function itemCard(item) {
         <ul class="checklist">${item.checklist.map((c) => `<li><label class="${c.done ? 'done' : ''}"><input type="checkbox" data-check="${c.id}" ${c.done ? 'checked' : ''}><span>${esc(c.text)}</span></label></li>`).join('')}</ul>
         <div class="progress" title="${done}/${item.checklist.length}"><div style="width:${Math.round((done / item.checklist.length) * 100)}%"></div></div>` : ''}
     </div>
-    <button class="icon-btn" data-edit="${item.id}" title="Editar">✏️</button>
+    <button class="icon-btn" data-edit="${item.id}" title="Editar" aria-label="Editar">${icon('pencil')}</button>
   </article>`;
 }
 
@@ -471,7 +519,7 @@ function itemsView() {
   const in7 = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 8);
   const pending = list.filter((i) => !i.done);
   const groups = [
-    ['⚠️ Vencidas', pending.filter((i) => new Date(i.due_at) < now), 'danger'],
+    ['Vencidas', pending.filter((i) => new Date(i.due_at) < now), 'danger'],
     ['Hoy', pending.filter((i) => new Date(i.due_at) >= now && dateKey(new Date(i.due_at)) === todayKey)],
     ['Próximos 7 días', pending.filter((i) => dateKey(new Date(i.due_at)) > todayKey && new Date(i.due_at) < in7)],
     ['Más adelante', pending.filter((i) => new Date(i.due_at) >= in7)],
@@ -492,11 +540,11 @@ function itemsView() {
       </select>
       <label class="toggle"><input type="checkbox" id="show-done" ${f.showDone ? 'checked' : ''}> <span class="long">Mostrar completadas</span><span class="short">Hechas</span></label>
       <span class="spacer"></span>
-      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">+ Tarea</button>
-      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">+ Examen</button>
+      <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">${icon('plus')}Tarea</button>
+      <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">${icon('plus')}Examen</button>
     </div>
-    <div class="scroll">${body || `<div class="empty">🎉 No hay nada pendiente${f.type !== 'all' || f.subject ? ' con estos filtros' : ''}.</div>`}</div>
-    <button class="fab show-mobile" data-action="newItem" data-type="task" aria-label="Añadir tarea o examen">+</button>`;
+    <div class="scroll">${body || (f.type !== 'all' || f.subject ? '<div class="empty"><strong>Nada por aquí</strong>No hay nada pendiente con estos filtros.</div>' : '<div class="empty"><strong>Todo al día</strong>No tienes tareas ni exámenes pendientes.</div>')}</div>
+    <button class="fab show-mobile" data-action="newItem" data-type="task" aria-label="Añadir tarea o examen">${icon('plus')}</button>`;
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest('#type-filter button');
@@ -516,21 +564,21 @@ function subjectsView() {
     <div class="toolbar">
       <h2>Asignaturas</h2>
       <span class="spacer"></span>
-      <button class="btn btn-primary" data-action="newSubject">+ <span class="long">Nueva asignatura</span><span class="short">Nueva</span></button>
+      <button class="btn btn-primary" data-action="newSubject">${icon('plus')}<span class="long">Nueva asignatura</span><span class="short">Nueva</span></button>
     </div>
     <div class="scroll">
       ${state.subjects.length ? `<div class="subjects-grid">${state.subjects.map((s) => `
         <div class="card subject-card" style="--c:${s.color}">
-          <h3><span class="dot" style="--c:${s.color}"></span>${esc(s.name)} <span class="hint">${esc(shortName(s))}</span></h3>
-          <div class="info">📍 Aula: ${esc(s.room || '—')}</div>
-          <div class="info">👤 Profesor/a: ${esc(s.teacher || '—')}</div>
-          <div class="info">🕑 ${hours(s.id)} clase(s) por semana</div>
+          <h3>${esc(s.name)}<span class="abbr">${esc(shortName(s))}</span></h3>
+          <div class="info">${icon('pin')}${s.room ? `Aula ${esc(s.room)}` : 'Sin aula'}</div>
+          <div class="info">${icon('user')}${esc(s.teacher || 'Sin profesor asignado')}</div>
+          <div class="info">${icon('clock')}${plural(hours(s.id), 'clase', 'clases')} a la semana</div>
           <div class="actions">
-            <button class="btn btn-sm" data-action="editSubject" data-id="${s.id}">✏️ Editar</button>
-            <button class="btn btn-sm btn-danger" data-action="deleteSubject" data-id="${s.id}">🗑 Eliminar</button>
+            <button class="btn btn-sm" data-action="editSubject" data-id="${s.id}">${icon('pencil')}Editar</button>
+            <button class="btn btn-sm btn-danger" data-action="deleteSubject" data-id="${s.id}">${icon('trash')}Eliminar</button>
           </div>
         </div>`).join('')}</div>`
-      : '<div class="empty">Aún no tienes asignaturas. Crea la primera para empezar a montar tu horario.</div>'}
+      : '<div class="empty"><strong>Empieza por tus asignaturas</strong>Añade cada una con su aula, profesor y color, y luego colócalas en el horario.</div>'}
     </div>`;
 }
 
@@ -538,7 +586,7 @@ function openSubjectModal(subject) {
   const s = subject || { name: '', short_name: '', color: PALETTE[(state.subjects.length * 5) % PALETTE.length], room: '', teacher: '' };
   openModal(`
     <form id="subject-form">
-      <div class="modal-head"><h2>${subject ? 'Editar asignatura' : 'Nueva asignatura'}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="modal-head"><h2>${subject ? 'Editar asignatura' : 'Nueva asignatura'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <div class="row">
         <label class="field" style="flex:3"><span>Nombre</span><input type="text" name="name" value="${esc(s.name)}" required maxlength="60" placeholder="Matemáticas"></label>
         <label class="field" style="flex:1"><span>Abreviatura</span><input type="text" name="short_name" value="${esc(s.short_name)}" maxlength="6" placeholder="MAT"></label>
@@ -604,15 +652,15 @@ function settingsView() {
           <input type="time" name="end_time" value="${s.end_time}" aria-label="Fin">
           <input type="text" name="label" value="${esc(s.label)}" placeholder="Etiqueta (opcional)" maxlength="40">
           <label class="brk"><input type="checkbox" name="is_break" ${s.is_break ? 'checked' : ''}> Descanso</label>
-          <button class="icon-btn" data-del-slot="${s.id}" title="Eliminar tramo">🗑</button>
+          <button class="icon-btn" data-del-slot="${s.id}" title="Eliminar tramo" aria-label="Eliminar tramo">${icon('trash')}</button>
         </div>`).join('') || '<p class="hint">No hay tramos.</p>'}</div>
-      <button class="btn" id="add-slot">+ Añadir tramo</button>
+      <button class="btn" id="add-slot">${icon('plus')}Añadir tramo</button>
     </section>
 
     <section class="card">
       <h2>Avisos por correo</h2>
       <p class="hint">Los avisos se envían a <b>${esc(u.email)}</b>.</p>
-      ${state.mailConfigured ? '' : '<div class="status warn">⚠️ El servidor todavía no tiene configurado el envío de correo (SMTP). Los avisos se registrarán en la consola del servidor hasta que se configure.</div>'}
+      ${state.mailConfigured ? '' : `<div class="status warn">${icon('alert')}<span>El servidor todavía no tiene configurado el envío de correo (SMTP). Los avisos se registrarán en la consola del servidor hasta que se configure.</span></div>`}
       <label class="check-line"><input type="checkbox" id="s-notify" ${u.email_notifications ? 'checked' : ''}> Recibir recordatorios de tareas y exámenes</label>
       <label class="field"><span>Aviso por defecto para nuevas tareas y exámenes</span>
         <select id="s-default-rem">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === u.default_reminder_minutes ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -623,7 +671,7 @@ function settingsView() {
         <label class="field"><span>Zona horaria</span><input type="text" id="s-tz" value="${esc(u.timezone)}" list="tz-list"></label>
       </div>
       <datalist id="tz-list">${(Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : []).map((z) => `<option value="${z}">`).join('')}</datalist>
-      <button class="btn" id="test-email">📨 Enviar correo de prueba</button>
+      <button class="btn" id="test-email">${icon('mail')}Enviar correo de prueba</button>
     </section>
 
     <section class="card">
@@ -685,7 +733,10 @@ function bindSettings(root) {
   $('#s-digest-hour', root).onchange = (e) => saveSettings({ digest_hour: Number(e.target.value) });
   $('#s-tz', root).onchange = async (e) => { if (!(await saveSettings({ timezone: e.target.value.trim() }))) e.target.value = state.user.timezone; };
   $('#s-name', root).onchange = async (e) => {
-    if (await saveSettings({ name: e.target.value })) $('.userbox .name').textContent = state.user.name;
+    if (await saveSettings({ name: e.target.value })) {
+      $('.userbox .name').textContent = state.user.name;
+      $('.userbox .avatar').textContent = initials(state.user.name);
+    }
   };
   $('#test-email', root).onclick = async (e) => {
     e.target.disabled = true;
@@ -727,18 +778,18 @@ function dayDetail(key, inModal) {
     const classes = classesOn(date.getDay());
     const items = state.items.filter((i) => dateKey(new Date(i.due_at)) === key);
     return `
-      <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? '<button class="icon-btn" data-close>✕</button>' : ''}</div>
+      <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? `<button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>` : ''}</div>
       <div class="group-title" style="margin-top:0">Clases</div>
       ${classes.length ? `<div class="day-classes">${classes.map(({ slot, subject, entry }) => `
         <div class="day-class" style="--c:${subject.color}">
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
-          <div><b>${esc(subject.name)}</b><div class="info">${[entry.room_override || subject.room ? `📍 ${esc(entry.room_override || subject.room)}` : '', subject.teacher ? `👤 ${esc(subject.teacher)}` : ''].filter(Boolean).join(' · ')}</div></div>
+          <div><b>${esc(subject.name)}</b><div class="info">${entry.room_override || subject.room ? `<span>${icon('pin')}${esc(entry.room_override || subject.room)}</span>` : ''}${subject.teacher ? `<span>${icon('user')}${esc(subject.teacher)}</span>` : ''}</div></div>
         </div>`).join('')}</div>` : `<p class="hint">${state.user.visible_days.includes(date.getDay()) ? 'No hay clases este día.' : 'Este día no está en tu semana escolar.'}</p>`}
       <div class="group-title">Tareas y exámenes</div>
       ${items.map(itemCard).join('') || '<p class="hint">Nada para este día.</p>'}
       <div class="modal-foot">
-        <button class="btn btn-primary" data-action="newItem" data-type="task" data-date="${key}">+ Tarea</button>
-        <button class="btn btn-exam" data-action="newItem" data-type="exam" data-date="${key}">+ Examen</button>
+        <button class="btn btn-primary" data-action="newItem" data-type="task" data-date="${key}">${icon('plus')}Tarea</button>
+        <button class="btn btn-exam" data-action="newItem" data-type="exam" data-date="${key}">${icon('plus')}Examen</button>
       </div>`;
 }
 
@@ -757,7 +808,7 @@ function openSlotModal(slotId, day) {
   const entry = state.schedule.find((e) => e.slot_id === slotId && e.day === day);
   let selected = entry ? entry.subject_id : null;
   if (!state.subjects.length) {
-    openModal(`<div class="modal-head"><h2>Primero crea tus asignaturas</h2><button class="icon-btn" data-close>✕</button></div>
+    openModal(`<div class="modal-head"><h2>Primero crea tus asignaturas</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <p>Para rellenar el horario necesitas al menos una asignatura (con su aula, profesor/a y color).</p>
       <div class="modal-foot"><button class="btn btn-primary" id="go-subj">Crear asignatura</button></div>`, (root) => {
       $('#go-subj', root).onclick = () => { closeModal(); location.hash = 'subjects'; openSubjectModal(null); };
@@ -766,10 +817,10 @@ function openSlotModal(slotId, day) {
   }
   openModal(`
     <form id="slot-form">
-      <div class="modal-head"><h2>${DAY_LONG[day]} · ${slot.start_time}–${slot.end_time}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="modal-head"><h2>${DAY_LONG[day]} · ${slot.start_time}–${slot.end_time}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <div class="subject-pick">
         <button type="button" class="none ${selected === null ? 'active' : ''}" data-sid="">— Libre —</button>
-        ${state.subjects.map((s) => `<button type="button" data-sid="${s.id}" class="${selected === s.id ? 'active' : ''}" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</button>`).join('')}
+        ${state.subjects.map((s) => `<button type="button" data-sid="${s.id}" class="${selected === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
       </div>
       <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" maxlength="60" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
       <div class="error" id="form-error"></div>
@@ -824,10 +875,10 @@ function openItemModal(item, defaults = {}) {
     <form id="item-form" novalidate>
       <div class="modal-head">
         <h2 id="item-heading"></h2>
-        <button type="button" class="icon-btn" data-close>✕</button>
+        <button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>
       </div>
       <div class="field"><div class="segmented" id="type-seg">
-        <button type="button" data-type="task">✅ Tarea</button><button type="button" data-type="exam" class="exam">📝 Examen</button>
+        <button type="button" data-type="task">${icon('check')}Tarea</button><button type="button" data-type="exam" class="exam">${icon('exam')}Examen</button>
       </div></div>
       <label class="field"><span>Título</span><input type="text" name="title" maxlength="150" value="${esc(data.title)}" placeholder="Ej.: Ejercicios del tema 3" required></label>
       <label class="field"><span>Asignatura</span>
@@ -843,14 +894,14 @@ function openItemModal(item, defaults = {}) {
         ${state.user.email_notifications ? '' : '<small class="hint">Tienes los avisos por correo desactivados en Ajustes.</small>'}
       </label>
       <label class="field"><span>Descripción / notas</span><textarea name="description" maxlength="5000" placeholder="Temas que entran, páginas, materiales…">${esc(data.description)}</textarea></label>
-      <div class="field"><span>Lista de comprobación</span>
+      <div class="field"><span>Checklist</span>
         <div class="cl-editor" id="cl-list"></div>
         <div class="cl-row"><input type="text" id="cl-new" maxlength="200" placeholder="Añadir paso y pulsar Enter"><button type="button" class="btn btn-sm" id="cl-add">Añadir</button></div>
       </div>
       <label class="check-line"><input type="checkbox" name="done" ${data.done ? 'checked' : ''}> Marcar como realizada</label>
       <div class="error" id="form-error"></div>
       <div class="modal-foot">
-        ${isNew ? '' : '<button type="button" class="btn btn-danger left" id="del-item">🗑 Eliminar</button>'}
+        ${isNew ? '' : '<button type="button" class="btn btn-danger left" id="del-item">' + icon('trash') + 'Eliminar</button>'}
         <button type="button" class="btn" data-close>Cancelar</button>
         <button class="btn btn-primary">Guardar</button>
       </div>
@@ -868,7 +919,7 @@ function openItemModal(item, defaults = {}) {
       $('#cl-list', form).innerHTML = data.checklist.map((c, i) => `
         <div class="cl-row"><input type="checkbox" data-i="${i}" ${c.done ? 'checked' : ''}>
           <input type="text" data-i="${i}" value="${esc(c.text)}" maxlength="200">
-          <button type="button" class="icon-btn" data-rm="${i}" title="Quitar">✕</button></div>`).join('');
+          <button type="button" class="icon-btn" data-rm="${i}" title="Quitar" aria-label="Quitar">${icon('x')}</button></div>`).join('');
     };
     renderChecklist();
     const addStep = () => {

@@ -151,13 +151,14 @@ test('avisos por correo y resumen diario', async () => {
 
   sent.length = 0;
   await scheduler.tick(now);
-  const toMar = sent.filter((m) => m.to === 'mar@x.com' && m.subject.startsWith('⏰'));
-  assert.deepEqual(toMar.map((m) => m.subject.split(': ').pop()).sort(), ['Examen', 'Pronto']);
+  const isReminder = (m) => m.subject.startsWith('Recordatorio: ');
+  const toMar = sent.filter((m) => m.to === 'mar@x.com' && isReminder(m));
+  assert.deepEqual(toMar.map((m) => m.subject.replace(/^Recordatorio: /, '').replace(/ \(.*\)$/, '')).sort(), ['Examen', 'Pronto']);
   assert.ok(toMar.find((m) => m.subject.includes('Pronto')).html.includes('Paso &lt;1&gt;'));
 
   sent.length = 0;
   await scheduler.tick(now);
-  assert.equal(sent.filter((m) => m.subject.startsWith('⏰')).length, 0, 'no se repiten avisos');
+  assert.equal(sent.filter(isReminder).length, 0, 'no se repiten avisos');
 
   // Cambiar la fecha reprograma el aviso.
   await c('PUT', `/items/${exam.id}`, { due_at: new Date(now.getTime() + 40 * 60000).toISOString() });
@@ -175,12 +176,12 @@ test('avisos por correo y resumen diario', async () => {
   await c('PUT', '/me/settings', { email_notifications: true, daily_digest: true, digest_hour: 12 });
   sent.length = 0;
   await scheduler.tick(now);
-  const digest = sent.filter((m) => m.to === 'mar@x.com' && m.subject.startsWith('📋'));
+  const digest = sent.filter((m) => m.to === 'mar@x.com' && m.subject.startsWith('Tu resumen'));
   assert.equal(digest.length, 1);
   assert.match(digest[0].text, /Lejos/);
   sent.length = 0;
   await scheduler.tick(now);
-  assert.equal(sent.filter((m) => m.subject.startsWith('📋') && m.to === 'mar@x.com').length, 0, 'un resumen al día');
+  assert.equal(sent.filter((m) => m.subject.startsWith('Tu resumen') && m.to === 'mar@x.com').length, 0, 'un resumen al día');
   assert.equal(user.email, 'mar@x.com');
 });
 

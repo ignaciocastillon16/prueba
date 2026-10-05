@@ -18,7 +18,7 @@ export function createMailer(env = process.env, logger = console) {
         auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
       })
     : nodemailer.createTransport({ jsonTransport: true });
-  const from = env.MAIL_FROM || env.SMTP_USER || 'Mi Horario <no-reply@localhost>';
+  const from = env.MAIL_FROM || env.SMTP_USER || 'Horaria <no-reply@localhost>';
 
   return {
     configured,

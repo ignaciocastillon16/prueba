@@ -1,5 +1,5 @@
 {
-  "name": "horario-escolar",
+  "name": "horaria",
   "version": "1.0.0",
   "description": "Horario escolar mensual con tareas, exámenes, checklists y avisos por correo para usuarios registrados.",
   "type": "module",
