@@ -5,7 +5,7 @@ import { createApi } from './api.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-export function createApp({ db, mailer, pusher = null, appUrl = '', trustProxy = false }) {
+export function createApp({ db, mailer, pusher = null, appUrl = '', trustProxy = false, registerLimit }) {
   const app = express();
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
@@ -18,7 +18,7 @@ export function createApp({ db, mailer, pusher = null, appUrl = '', trustProxy =
     });
     next();
   });
-  app.use('/api', createApi({ db, mailer, pusher, appUrl }));
+  app.use('/api', createApi({ db, mailer, pusher, appUrl, registerLimit }));
   app.use(
     express.static(publicDir, {
       index: 'index.html',

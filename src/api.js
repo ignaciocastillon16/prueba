@@ -105,10 +105,10 @@ function createLimiter(max, windowMs) {
   };
 }
 
-export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
+export function createApi({ db, mailer, pusher = null, appUrl = '', registerLimit = 20 }) {
   const r = Router();
   const allowLogin = createLimiter(10, 15 * 60 * 1000);
-  const allowRegister = createLimiter(20, 60 * 60 * 1000);
+  const allowRegister = createLimiter(registerLimit, 60 * 60 * 1000);
   const allowTestEmail = createLimiter(5, 60 * 60 * 1000);
 
   // Protección CSRF: toda petición que modifica datos debe ser JSON (los formularios
@@ -538,6 +538,37 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
         await t.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)', uid(req), subjectId, slotId, day, room);
       });
     }
+    res.json(await listSchedule(uid(req)));
+  });
+
+  // Varias casillas a la vez (selección múltiple en el horario): todo o nada.
+  r.put('/schedule/bulk', async (req, res) => {
+    const cells = req.body.cells;
+    if (!Array.isArray(cells) || !cells.length || cells.length > 1000) throw bad('Elige al menos una casilla');
+    const targets = [];
+    for (const c of cells) {
+      const day = int(c?.day, 'Día', 0, 6);
+      const slot = await db.get('SELECT id, timetable_id FROM time_slots WHERE id = ? AND user_id = ?', id(c?.slot_id), uid(req));
+      if (!slot) throw notFound('Tramo');
+      targets.push({ slot, day });
+    }
+    const clear = req.body.subject_id === null || req.body.subject_id === undefined || req.body.subject_id === '';
+    const subject = clear ? null : await getSubject(uid(req), id(req.body.subject_id));
+    if (!clear && !subject) throw notFound('Asignatura');
+    if (subject && targets.some((x) => x.slot.timetable_id !== subject.timetable_id)) throw bad('Esa asignatura es de otro horario');
+    // keep_room: cada casilla conserva el aula que ya tuviera (cuando eran distintas y no se ha escrito otra).
+    const keepRoom = Boolean(req.body.keep_room);
+    const room = keepRoom ? '' : str(req.body.room_override, 'El aula', { max: 20000 });
+    await db.tx(async (t) => {
+      for (const { slot, day } of targets) {
+        const prev = await t.get('SELECT room_override FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slot.id, day);
+        await t.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slot.id, day);
+        if (subject) {
+          await t.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)',
+            uid(req), subject.id, slot.id, day, keepRoom ? prev?.room_override || '' : room);
+        }
+      }
+    });
     res.json(await listSchedule(uid(req)));
   });
 

@@ -48,6 +48,7 @@ const ICONS = {
   down: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
   event: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="m12 12.2 1.05 2.15 2.35.33-1.7 1.66.4 2.35-2.1-1.1-2.1 1.1.4-2.35-1.7-1.66 2.35-.33Z"/>',
   download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
+  select: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><path d="m13.5 17 2.3 2.3 4.2-4.6"/>',
   palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.7-1.6h2.1a4 4 0 0 0 4-4C20.5 6.6 16.7 3.5 12 3.5Z"/><circle cx="7.8" cy="11.2" r="1.1"/><circle cx="10" cy="7.6" r="1.1"/><circle cx="14.6" cy="7.6" r="1.1"/>',
 };
 const icon = (name, cls = '') =>
@@ -367,6 +368,7 @@ function renderView() {
   if (!state.user || !$('#view')) return;
   const view = VIEWS.some(([id]) => id === location.hash.slice(1)) ? location.hash.slice(1) : 'month';
   state.view = view;
+  if (view !== 'week') state.ttSel = null;
   $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $$('#user-menu [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $('#user-menu-btn')?.classList.toggle('active', !TAB_VIEWS.includes(view));
@@ -375,7 +377,7 @@ function renderView() {
   const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
   el.innerHTML = { month: monthView, week: weekView, items: itemsView, subjects: subjectsView, settings: settingsView }[view]();
   if (view === 'settings') bindSettings(el);
-  if (view === 'week') fitTimetable(el);
+  if (view === 'week') { fitTimetable(el); updateSelectBar(); }
   const newScroll = $('.scroll', el);
   if (newScroll && el.dataset.lastView === view) newScroll.scrollTop = scrollTop;
   el.dataset.lastView = view;
@@ -411,9 +413,44 @@ function bindViewEvents(root) {
     const cell = t.closest('.day-cell');
     if (cell) return isMobile() ? selectDay(cell.dataset.date) : openDayModal(cell.dataset.date);
     const tt = t.closest('.tt-cell');
-    if (tt) return openSlotModal(tt.dataset.slots.split(',').map(Number), Number(tt.dataset.day));
+    if (tt) {
+      // Ctrl/⌘/Mayús + clic también empieza a seleccionar varias casillas.
+      if (!state.ttSel && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+        state.ttSel = { ttId: activeTT().id, keys: new Set() };
+        renderView();
+      }
+      if (state.ttSel) return toggleCells([cellKey(tt)]);
+      return openSlotModal([{ day: Number(tt.dataset.day), slotIds: tt.dataset.slots.split(',').map(Number) }]);
+    }
+    // Seleccionando: el día de la cabecera elige toda la columna y la hora, toda la fila.
+    const head = state.ttSel && t.closest('.tt-head[data-day], .tt-time[data-slot]');
+    if (head) {
+      const sel = head.dataset.day ? `.tt-cell[data-day="${head.dataset.day}"]` : '.tt-cell';
+      toggleCells($$(sel, $('#view')).filter((c) => !head.dataset.slot || c.dataset.slots.split(',').includes(head.dataset.slot)).map(cellKey));
+    }
   });
 }
+
+/* Selección de varias casillas del horario (para ponerles la misma asignatura a la vez). */
+const cellKey = (el) => `${el.dataset.day}:${el.dataset.slots}`;
+const parseCellKey = (k) => { const [day, ids] = k.split(':'); return { day: Number(day), slotIds: ids.split(',').map(Number) }; };
+function toggleCells(keys) {
+  const sel = state.ttSel.keys;
+  const add = keys.some((k) => !sel.has(k));
+  for (const k of keys) add ? sel.add(k) : sel.delete(k);
+  for (const el of $$('.tt-cell', $('#view'))) el.classList.toggle('sel', sel.has(cellKey(el)));
+  updateSelectBar();
+}
+function updateSelectBar() {
+  const n = state.ttSel?.keys.size || 0;
+  const label = $('#sel-count');
+  if (!label) return;
+  label.textContent = n ? `${n} ${n === 1 ? 'casilla seleccionada' : 'casillas seleccionadas'}` : 'Toca casillas, un día o una hora';
+  $('#sel-assign').disabled = !n;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.ttSel && !$('#modal-root').innerHTML) { state.ttSel = null; renderView(); }
+});
 
 function selectDay(key) {
   state.selectedDay = key;
@@ -445,6 +482,12 @@ const ACTIONS = {
   pickBackground: () => openBackgroundModal(),
   editTimetable: () => openTimetableModal(activeTT()),
   downloadTimetable: () => openDownloadModal(),
+  toggleSelect: () => { state.ttSel = state.ttSel ? null : { ttId: activeTT().id, keys: new Set() }; renderView(); },
+  cancelSelect: () => { state.ttSel = null; renderView(); },
+  assignSelected: () => {
+    const cells = [...(state.ttSel?.keys || [])].map(parseCellKey);
+    if (cells.length) openSlotModal(cells);
+  },
 };
 
 /* ============================================================
@@ -623,10 +666,13 @@ function weekView() {
   const tt = activeTT();
   const days = visibleDays(tt);
   const slots = ttSlots(tt.id);
+  if (state.ttSel && state.ttSel.ttId !== tt.id) state.ttSel = null;
+  const sel = state.ttSel;
   const toolbar = `
     <div class="toolbar tt-toolbar">
       ${ttSwitcher()}
       <span class="spacer"></span>
+      ${slots.length ? `<button class="btn ${sel ? 'active' : ''}" data-action="toggleSelect" title="Seleccionar varias casillas" aria-pressed="${Boolean(sel)}">${icon('select')}<span class="long">Seleccionar</span><span class="short">Varias</span></button>` : ''}
       <button class="btn" data-action="downloadTimetable" title="Descargar como imagen">${icon('download')}<span class="long">Descargar</span></button>
       <button class="btn" data-action="pickBackground" title="Fondo del horario">${icon('palette')}<span class="long">Fondo</span></button>
       <button class="btn" data-action="goto" data-view="settings" title="Tramos y días">${icon('sliders')}<span class="long">Tramos</span></button>
@@ -640,7 +686,7 @@ function weekView() {
   const todayDow = now.getDay();
   let cells = '<div class="tt-corner" style="grid-area:1 / 1"></div>';
   days.forEach((d, j) => {
-    cells += `<div class="tt-head ${d === todayDow ? 'today' : ''}" style="grid-area:1 / ${j + 2}"><span class="long">${DAY_LONG[d]}</span><span class="short">${DAY_SHORT[d]}</span></div>`;
+    cells += `<div class="tt-head ${d === todayDow ? 'today' : ''}" data-day="${d}" style="grid-area:1 / ${j + 2}"><span class="long">${DAY_LONG[d]}</span><span class="short">${DAY_SHORT[d]}</span></div>`;
   });
   let number = 0;
   slots.forEach((slot, i) => {
@@ -654,7 +700,7 @@ function weekView() {
     number += 1;
     // El número sale de la etiqueta del tramo («2», «2ª hora»…); si no tiene, se numera en orden.
     const shown = slot.label.match(/\d+/)?.[0] ?? number;
-    cells += `<div class="tt-time" style="grid-area:${row} / 1" title="${esc(range + (slot.label ? ` · ${slot.label}` : ''))}"><span class="t">${slot.start_time}</span><b>${shown}</b></div>`;
+    cells += `<div class="tt-time" data-slot="${slot.id}" style="grid-area:${row} / 1" title="${esc(range + (slot.label ? ` · ${slot.label}` : ''))}"><span class="t">${slot.start_time}</span><b>${shown}</b></div>`;
   });
   days.forEach((d, j) => {
     for (const b of dayBlocks(d, slots)) {
@@ -663,23 +709,29 @@ function weekView() {
       const isNow = d === todayDow && nowTime >= startT && nowTime < endT;
       const area = `grid-area:${b.row + 2} / ${j + 2} / span ${b.span} / span 1`;
       const ids = b.slots.map((x) => x.id).join(',');
+      const selCls = sel?.keys.has(`${d}:${ids}`) ? 'sel' : '';
       if (b.subject) {
         const s = b.subject;
         const tip = [subjectLabel(s), `${startT}–${endT}`, b.room && `Aula ${b.room}`, effTeacher(s)].filter(Boolean).join(' · ');
-        cells += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slots="${ids}" data-day="${d}" style="${area};--c:${s.color};--ink:${textOn(s.color)}" title="${esc(tip)}">
+        cells += `<div class="tt-cell filled ${isNow ? 'now' : ''} ${selCls}" data-slots="${ids}" data-day="${d}" style="${area};--c:${s.color};--ink:${textOn(s.color)}" title="${esc(tip)}">
           <div class="tt-name"><span>${esc(s.name)}</span></div>
           ${b.room ? `<div class="tt-room">${esc(b.room)}</div>` : ''}
         </div>`;
       } else {
-        cells += `<div class="tt-cell ${isNow ? 'now' : ''}" data-slots="${ids}" data-day="${d}" style="${area}" title="${esc(`${DAY_LONG[d]} ${startT}–${endT}`)}"><span class="plus">${icon('plus')}</span></div>`;
+        cells += `<div class="tt-cell ${isNow ? 'now' : ''} ${selCls}" data-slots="${ids}" data-day="${d}" style="${area}" title="${esc(`${DAY_LONG[d]} ${startT}–${endT}`)}"><span class="plus">${icon('plus')}</span></div>`;
       }
     }
   });
   const rows = slots.map((x) => (x.is_break ? 'minmax(0,.6fr)' : 'minmax(0,1fr)')).join(' ');
   return `${toolbar}
-    <div class="tt-board bg-${tt.background || 'rayas'}" style="min-height:${ttMinHeight(slots)}px">
+    <div class="tt-board bg-${tt.background || 'rayas'} ${sel ? 'selecting' : ''}" style="min-height:${ttMinHeight(slots)}px">
       <div class="tt-grid" style="grid-template-columns:${isMobile() ? '38px' : '68px'} repeat(${days.length},minmax(0,1fr));grid-template-rows:auto ${rows}">${cells}</div>
-    </div>`;
+    </div>
+    ${sel ? `<div class="select-bar" role="status">
+      <span id="sel-count"></span>
+      <button class="btn" data-action="cancelSelect">Cancelar</button>
+      <button class="btn btn-primary" id="sel-assign" data-action="assignSelected">Asignar</button>
+    </div>` : ''}`;
 }
 
 /** Altura mínima legible del horario: por debajo, la página se desplaza en lugar de aplastar las clases. */
@@ -1693,12 +1745,17 @@ function openDayModal(key) {
 }
 
 /** Asignar asignatura a una celda del horario semanal. */
-function openSlotModal(slotIds, day) {
-  const slots = slotIds.map((id) => state.slots.find((s) => s.id === id));
-  const slot = { start_time: slots[0].start_time, end_time: slots[slots.length - 1].end_time };
-  const entry = state.schedule.find((e) => e.slot_id === slotIds[0] && e.day === day);
-  let selected = entry ? entry.subject_id : null;
-  const options = ttSubjects(slots[0].timetable_id);
+/** Asignatura de una o varias casillas del horario (cells: [{ day, slotIds }]). */
+function openSlotModal(cells) {
+  const targets = cells.flatMap((c) => c.slotIds.map((id) => ({ day: c.day, slot: state.slots.find((s) => s.id === id) })));
+  const entries = targets.map((x) => state.schedule.find((e) => e.slot_id === x.slot.id && e.day === x.day) || null);
+  const subjectIds = [...new Set(entries.map((e) => e?.subject_id ?? null))];
+  const rooms = [...new Set(entries.map((e) => e?.room_override || ''))];
+  // undefined = tienen asignaturas distintas y aún no se ha elegido ninguna
+  let selected = subjectIds.length === 1 ? subjectIds[0] : undefined;
+  const mixedRooms = rooms.length > 1;
+  const many = cells.length > 1;
+  const options = ttSubjects(targets[0].slot.timetable_id);
   const subRow = () => {
     const top = topOf(subjectById(selected));
     const subs = top ? subsOf(top.id) : [];
@@ -1710,28 +1767,41 @@ function openSlotModal(slotIds, day) {
     openModal(`<div class="modal-head"><h2>Este horario aún no tiene asignaturas</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <p>Para rellenar el horario necesitas al menos una asignatura (con su aula, profesor/a y color).</p>
       <div class="modal-foot"><button class="btn btn-primary" id="go-subj">Crear asignatura</button></div>`, (root) => {
-      $('#go-subj', root).onclick = () => { closeModal(); location.hash = 'subjects'; openSubjectModal(null); };
+      $('#go-subj', root).onclick = () => { state.ttSel = null; closeModal(); location.hash = 'subjects'; openSubjectModal(null); };
     });
     return;
   }
+  const range = (c) => {
+    const sl = c.slotIds.map((id) => state.slots.find((s) => s.id === id));
+    return `${sl[0].start_time}–${sl[sl.length - 1].end_time}`;
+  };
+  // Resumen de lo elegido, agrupado por día: «Lunes 9:00–10:00, 11:00–12:00 · Miércoles…»
+  const summary = DAY_ORDER.filter((d) => cells.some((c) => c.day === d))
+    .map((d) => `${DAY_LONG[d]} ${cells.filter((c) => c.day === d).sort((a, b) => range(a).localeCompare(range(b))).map(range).join(', ')}`)
+    .join(' · ');
+  const heading = many ? `${cells.length} casillas` : `${DAY_LONG[cells[0].day]} · ${range(cells[0])}`;
   openModal(`
     <form id="slot-form">
-      <div class="modal-head"><h2>${DAY_LONG[day]} · ${slot.start_time}–${slot.end_time}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      <div class="modal-head"><div class="head-text"><h2>${heading}</h2>${many ? `<small class="hint">${esc(summary)}</small>` : ''}</div><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      ${selected === undefined ? '<p class="hint" style="margin:-4px 0 12px">Ahora tienen asignaturas distintas. Elige la que quieras poner en todas.</p>' : ''}
       <div class="subject-pick">
         <button type="button" class="none ${selected === null ? 'active' : ''}" data-sid="">— Libre —</button>
-        ${options.map((s) => `<button type="button" data-sid="${s.id}" class="${topOf(subjectById(selected))?.id === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
+        ${options.map((s) => `<button type="button" data-sid="${s.id}" class="${selected != null && topOf(subjectById(selected))?.id === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
       </div>
       <div class="sub-pick" id="sub-pick">${subRow()}</div>
-      ${slots.length > 1 ? `<p class="hint" style="margin:-4px 0 12px">Son ${slots.length} horas seguidas. Los cambios se aplican a todas.</p>` : ''}
-      <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
+      ${!many && targets.length > 1 ? `<p class="hint" style="margin:-4px 0 12px">Son ${targets.length} horas seguidas. Los cambios se aplican a todas.</p>` : ''}
+      <label class="field"><span>${many ? 'Aula para estas clases (opcional)' : 'Aula para esta clase (opcional)'}</span><input type="text" name="room" value="${mixedRooms ? '' : esc(rooms[0] || '')}"></label>
       <div class="error" id="form-error"></div>
-      <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">Guardar</button></div>
+      <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">${many ? 'Aplicar a todas' : 'Guardar'}</button></div>
     </form>`, (root) => {
     const form = $('#slot-form', root);
     const roomInput = form.room;
+    let roomTouched = false;
+    roomInput.oninput = () => { roomTouched = true; };
     const updatePlaceholder = () => {
       const s = subjectById(selected);
-      roomInput.placeholder = effRoom(s) ? `Por defecto: ${effRoom(s)}` : 'Por defecto: aula de la asignatura';
+      roomInput.placeholder = mixedRooms && !roomTouched ? 'Vacío: cada clase conserva su aula'
+        : effRoom(s) ? `Por defecto: ${effRoom(s)}` : 'Por defecto: aula de la asignatura';
     };
     updatePlaceholder();
     $('.subject-pick', form).onclick = (e) => {
@@ -1752,12 +1822,18 @@ function openSlotModal(slotIds, day) {
     $('.subject-pick', form).ondblclick = () => form.requestSubmit();
     form.onsubmit = async (e) => {
       e.preventDefault();
+      if (selected === undefined) { $('#form-error', form).textContent = 'Elige una asignatura (o «Libre» para vaciarlas)'; return; }
       try {
-        for (const id of slotIds) {
-          state.schedule = await api('PUT', '/schedule', { slot_id: id, day, subject_id: selected, room_override: roomInput.value });
-        }
+        state.schedule = await api('PUT', '/schedule/bulk', {
+          cells: targets.map((x) => ({ slot_id: x.slot.id, day: x.day })),
+          subject_id: selected,
+          room_override: roomInput.value,
+          keep_room: mixedRooms && !roomTouched,
+        });
+        state.ttSel = null;
         closeModal();
         refresh();
+        if (many) toast(selected === null ? 'Casillas vaciadas' : `${subjectLabel(subjectById(selected))} en ${cells.length} casillas`);
       } catch (err) {
         $('#form-error', form).textContent = err.message;
       }

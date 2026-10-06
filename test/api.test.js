@@ -29,7 +29,7 @@ let server;
 let base;
 
 before(async () => {
-  server = createApp({ db, mailer, pusher, appUrl: 'http://test' }).listen(0);
+  server = createApp({ db, mailer, pusher, appUrl: 'http://test', registerLimit: 1000 }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -539,4 +539,42 @@ test('sin límite práctico de caracteres', async () => {
   const tt = await c('POST', '/timetables', { name: 'H'.repeat(3000) });
   assert.equal(tt.status, 201);
   assert.ok(tt.body.timetables.some((t) => t.name.length === 3000));
+});
+
+test('asignar varias casillas del horario a la vez', async () => {
+  const c = client();
+  const reg = await c('POST', '/auth/register', { name: 'Marta', email: 'marta-bulk@x.com', password: 'secreto123' });
+  assert.equal(reg.status, 201, JSON.stringify(reg.body));
+  const boot = (await c('GET', '/bootstrap')).body;
+  const slots = boot.slots.filter((s) => !s.is_break);
+  const mat = (await c('POST', '/subjects', { name: 'Mates', color: '#123456', room: 'B-1' })).body;
+  const len = (await c('POST', '/subjects', { name: 'Lengua', color: '#654321' })).body;
+  await c('PUT', '/schedule', { slot_id: slots[0].id, day: 1, subject_id: len.id, room_override: 'Lab' });
+  const cells = [{ slot_id: slots[0].id, day: 1 }, { slot_id: slots[0].id, day: 3 }, { slot_id: slots[1].id, day: 5 }];
+  // Conservar el aula de cada casilla
+  let sched = (await c('PUT', '/schedule/bulk', { cells, subject_id: mat.id, keep_room: true })).body;
+  const at = (slot, day) => sched.find((e) => e.slot_id === slot && e.day === day);
+  assert.equal(at(slots[0].id, 1).subject_id, mat.id);
+  assert.equal(at(slots[0].id, 1).room_override, 'Lab', 'conserva su aula');
+  assert.equal(at(slots[0].id, 3).subject_id, mat.id);
+  assert.equal(at(slots[1].id, 5).subject_id, mat.id);
+  // Misma aula para todas
+  sched = (await c('PUT', '/schedule/bulk', { cells, subject_id: len.id, room_override: 'A-7' })).body;
+  assert.ok(cells.every((x) => at(x.slot_id, x.day).subject_id === len.id && at(x.slot_id, x.day).room_override === 'A-7'));
+  // Vaciar varias
+  sched = (await c('PUT', '/schedule/bulk', { cells: cells.slice(0, 2), subject_id: null })).body;
+  assert.equal(at(slots[0].id, 1), undefined);
+  assert.equal(at(slots[0].id, 3), undefined);
+  assert.equal(at(slots[1].id, 5).subject_id, len.id, 'las no elegidas no cambian');
+  // Validación: todo o nada
+  assert.equal((await c('PUT', '/schedule/bulk', { cells: [], subject_id: mat.id })).status, 400);
+  assert.equal((await c('PUT', '/schedule/bulk', { cells: [{ slot_id: slots[0].id, day: 9 }], subject_id: mat.id })).status, 400);
+  const tt2 = (await c('POST', '/timetables', { name: 'Otro' })).body;
+  const slot2 = tt2.slots.find((s) => s.timetable_id === tt2.id && !s.is_break);
+  const r = await c('PUT', '/schedule/bulk', { cells: [{ slot_id: slots[2].id, day: 2 }, { slot_id: slot2.id, day: 2 }], subject_id: mat.id });
+  assert.equal(r.status, 400, 'asignatura de otro horario');
+  assert.equal((await c('GET', '/bootstrap')).body.schedule.filter((e) => e.day === 2).length, 0, 'no aplica nada a medias');
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-bulk@x.com', password: 'secreto123' });
+  assert.equal((await otro('PUT', '/schedule/bulk', { cells, subject_id: null })).status, 404);
 });
