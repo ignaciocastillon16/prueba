@@ -332,9 +332,7 @@ test('varios horarios', async () => {
   assert.equal(del.body.slots.filter((s) => s.timetable_id === tt2).length, 0);
   assert.equal(del.body.schedule.filter((e) => slots2.some((s) => s.id === e.slot_id)).length, 0, 'borra sus clases');
   assert.equal(del.body.subjects.filter((x) => x.timetable_id === tt2).length, 0, 'borra sus asignaturas');
-  const kept = (await c('GET', '/items')).body.find((i) => i.id === task.id);
-  assert.ok(kept, 'la tarea se conserva');
-  assert.equal(kept.subject_id, null, 'sin asignatura');
+  assert.equal((await c('GET', '/items')).body.find((i) => i.id === task.id), undefined, 'sus tareas se borran con él');
   await c('DELETE', `/timetables/${empty.body.id}`);
   assert.equal((await c('DELETE', `/timetables/${tt1}`)).status, 400, 'no se borra el único');
 });
@@ -361,6 +359,9 @@ test('migración: los datos antiguos pasan a «Mi horario»', async () => {
   const slB = (await old.run("INSERT INTO time_slots (user_id, timetable_id, start_time, end_time) VALUES (?, ?, '10:00', '11:00')", u.insertId, tt2)).insertId;
   await old.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day) VALUES (?, ?, ?, 1)', u.insertId, shared, slA);
   await old.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day) VALUES (?, ?, ?, 1)', u.insertId, shared, slB);
+  // Un evento de la versión anterior (sin horario)
+  const oldEv = (await old.run("INSERT INTO events (user_id, title, start_at, created_at) VALUES (?, 'Viejo', '2026-02-01T09:00:00Z', '2026-01-01')", u.insertId)).insertId;
+  await old.run('UPDATE events SET timetable_id = NULL WHERE id = ?', oldEv);
   await old.close();
   old = await openDb({ file });
   const tts = await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId);
@@ -375,6 +376,7 @@ test('migración: los datos antiguos pasan a «Mi horario»', async () => {
   assert.deepEqual(subs.map((x) => x.timetable_id).sort(), [tts[0].id, tts[1].id].sort());
   const entryB = await old.get('SELECT subject_id FROM schedule_entries WHERE slot_id = ?', slB);
   assert.equal(subs.find((x) => x.id === entryB.subject_id).timetable_id, tt2, 'cada clase apunta a la asignatura de su horario');
+  assert.equal((await old.get('SELECT timetable_id FROM events WHERE id = ?', oldEv)).timetable_id, tt1, 'el evento pasa al horario abierto');
   await old.close();
   old = await openDb({ file });
   assert.equal((await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId)).length, 2, 'no se duplica al volver a arrancar');
@@ -508,12 +510,21 @@ test('cada tarea pertenece a un horario', async () => {
   const otro = client();
   await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-it@x.com', password: 'secreto123' });
   assert.equal((await otro('POST', '/items', { type: 'task', title: 'x', due_at: '2027-03-01T10:00:00Z', timetable_id: tt1 })).status, 404);
-  // Al borrar un horario sus tareas pasan al que queda abierto
+  // Los eventos también son de un horario
+  const ev1 = (await c('POST', '/events', { title: 'Charla', start_at: '2027-03-02T09:00:00Z', timetable_id: tt1 })).body;
+  assert.equal(ev1.timetable_id, tt1);
+  const ev2 = (await c('POST', '/events', { title: 'Excursión', start_at: '2027-03-03T09:00:00Z' })).body;
+  assert.equal(ev2.timetable_id, tt2, 'el horario abierto');
+  assert.equal((await c('PUT', `/events/${ev2.id}`, { title: 'Excursión al museo' })).body.timetable_id, tt2, 'lo conserva al editar');
+  assert.equal((await otro('POST', '/events', { title: 'x', start_at: '2027-03-02T09:00:00Z', timetable_id: tt1 })).status, 404);
+  // Al borrar un horario se borra todo lo suyo; lo del otro horario no cambia
   await c('PUT', '/me/settings', { active_timetable_id: tt1 });
   await c('DELETE', `/timetables/${tt2}`);
-  const moved = (await c('GET', '/items')).body.find((i) => i.id === loose.id);
-  assert.equal(moved.timetable_id, tt1);
-  assert.equal(moved.subject_id, null);
+  const items = (await c('GET', '/items')).body;
+  assert.equal(items.find((i) => i.id === loose.id), undefined);
+  assert.ok(items.find((i) => i.id === withS1.id) && items.find((i) => i.id === explicit.id));
+  const events = (await c('GET', '/events')).body;
+  assert.deepEqual(events.map((e) => e.id), [ev1.id]);
 });
 
 test('sin límite práctico de caracteres', async () => {

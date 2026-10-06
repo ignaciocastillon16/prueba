@@ -183,14 +183,16 @@ const monthDays = () => DAY_ORDER;
 /* Varios horarios: cada uno tiene sus tramos y clases. */
 const activeTT = () => state.timetables.find((t) => t.id === state.user.active_timetable_id) || state.timetables[0];
 const ttSlots = (ttId) => state.slots.filter((s) => s.timetable_id === ttId);
-/** Horario que corresponde a una fecha: el que tenga esas fechas o, si no, el activo. */
-function timetableForDate(d) {
+/** Las fechas de un horario (opcionales) limitan los días en que tiene clases. */
+function ttCovers(tt, d) {
   const k = typeof d === 'string' ? d : dateKey(d);
-  return (
-    state.timetables.find((t) => (t.start_date || t.end_date) && (!t.start_date || k >= t.start_date) && (!t.end_date || k <= t.end_date)) ||
-    activeTT()
-  );
+  return (!tt.start_date || k >= tt.start_date) && (!tt.end_date || k <= tt.end_date);
 }
+/** Clases de un horario en una fecha concreta (según sus días y sus fechas). */
+const classesOnDate = (tt, d) => (ttCovers(tt, d) && ttDays(tt).includes(d.getDay()) ? classesOn(d.getDay(), tt.id) : []);
+/* Cada horario es independiente: sus tareas, exámenes y eventos solo se ven en él. */
+const ttItems = (ttId = activeTT().id) => state.items.filter((i) => i.timetable_id === ttId);
+const ttEvents = (ttId = activeTT().id) => state.events.filter((e) => e.timetable_id === ttId);
 function applyTimetables(payload) {
   if (payload.user) state.user = payload.user;
   if (payload.timetables) state.timetables = payload.timetables;
@@ -469,8 +471,7 @@ const ACTIONS = {
   prev: () => goMonth(-1),
   next: () => goMonth(1),
   today: () => { state.cursor = startOfMonth(new Date()); state.selectedDay = dateKey(new Date()); renderView(); },
-  // Desde el calendario, la tarea va al horario de ese día; desde Tareas, al abierto.
-  newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, timetable_id: d.date ? timetableForDate(d.date).id : undefined, returnTo }),
+  newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, returnTo }),
   newSubject: () => openSubjectModal(null),
   newEvent: (d, returnTo) => openEventModal(null, { date: d.date, returnTo }),
   newSub: (d) => openSubjectModal(null, subjectById(Number(d.parent))),
@@ -524,6 +525,7 @@ function groupClasses(classes) {
 }
 
 function monthView() {
+  const tt = activeTT();
   const y = state.cursor.getFullYear();
   const m = state.cursor.getMonth();
   const days = monthDays();
@@ -536,14 +538,15 @@ function monthView() {
     const vis = week.filter((x) => days.includes(x.getDay()));
     if (vis.some((x) => x.getMonth() === m)) weeks.push(vis);
   }
+  const items = ttItems(tt.id);
   const byDay = new Map();
-  for (const it of state.items) {
+  for (const it of items) {
     const k = dateKey(new Date(it.due_at));
     if (!byDay.has(k)) byDay.set(k, []);
     byDay.get(k).push(it);
   }
   const eventsByDay = new Map();
-  for (const ev of state.events) {
+  for (const ev of ttEvents(tt.id)) {
     for (const k of eventDayKeys(ev)) {
       if (!eventsByDay.has(k)) eventsByDay.set(k, []);
       eventsByDay.get(k).push(ev);
@@ -552,15 +555,13 @@ function monthView() {
   const todayKey = dateKey(new Date());
   const classCache = new Map();
   const classesFor = (d) => {
-    const tt = timetableForDate(d);
-    if (!ttDays(tt).includes(d.getDay())) return [];
-    const k = `${tt.id}-${d.getDay()}`;
-    if (!classCache.has(k)) classCache.set(k, classesOn(d.getDay(), tt.id));
-    return classCache.get(k);
+    if (!ttCovers(tt, d)) return [];
+    if (!classCache.has(d.getDay())) classCache.set(d.getDay(), classesOnDate(tt, d));
+    return classCache.get(d.getDay());
   };
   const title = cap(state.cursor.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
   const monthPrefix = `${y}-${pad(m + 1)}`;
-  const monthItems = state.items.filter((i) => dateKey(new Date(i.due_at)).startsWith(monthPrefix));
+  const monthItems = items.filter((i) => dateKey(new Date(i.due_at)).startsWith(monthPrefix));
   const pendingExams = monthItems.filter((i) => i.type === 'exam' && !i.done).length;
   const pendingTasks = monthItems.filter((i) => i.type === 'task' && !i.done).length;
 
@@ -590,6 +591,7 @@ function monthView() {
   });
 
   return `
+    <div class="toolbar tt-toolbar">${ttSwitcher()}</div>
     <div class="toolbar month-toolbar">
       <button class="btn" data-action="prev" title="Mes anterior" aria-label="Mes anterior">${icon('left')}</button>
       <h2>${esc(title)}</h2>
@@ -801,7 +803,7 @@ function openTimetableModal(tt) {
         <label class="field"><span>Desde (opcional)</span><input type="date" name="start_date" value="${tt?.start_date || ''}"></label>
         <label class="field"><span>Hasta (opcional)</span><input type="date" name="end_date" value="${tt?.end_date || ''}"></label>
       </div>
-      <p class="hint" style="margin:-6px 0 14px">Si pones fechas, el calendario mensual usará este horario en esos días. Fuera de ellas se usa el horario que tengas abierto.</p>
+      <p class="hint" style="margin:-6px 0 14px">Si pones fechas, sus clases solo aparecen en el calendario entre esas fechas.</p>
       <div class="field"><span>Días de la semana</span>
         <div class="days-pick compact" id="tt-days">${DAY_ORDER.map((d) => {
           const on = ttDays(tt || current).includes(d);
@@ -825,9 +827,14 @@ function openTimetableModal(tt) {
     const del = $('#tt-delete', root);
     if (del) {
       del.onclick = async () => {
-        if (!confirm(`¿Eliminar el horario «${tt.name}»? Se borrarán sus tramos, clases y asignaturas. Tus tareas y exámenes se conservan.`)) return;
+        const nItems = ttItems(tt.id).length;
+        const nEvents = ttEvents(tt.id).length;
+        const extra = [nItems && plural(nItems, 'tarea o examen', 'tareas y exámenes'), nEvents && plural(nEvents, 'evento', 'eventos')].filter(Boolean).join(' y ');
+        if (!confirm(`¿Eliminar el horario «${tt.name}»? Se borrarán sus tramos, clases y asignaturas${extra ? `, y también ${extra}` : ''}. No se puede deshacer.`)) return;
         const r = await attempt(() => api('DELETE', `/timetables/${tt.id}`), 'Horario eliminado');
         if (r) {
+          state.items = state.items.filter((i) => i.timetable_id !== tt.id);
+          state.events = state.events.filter((e) => e.timetable_id !== tt.id);
           applyTimetables(r);
           closeModal();
           renderView();
@@ -1181,6 +1188,7 @@ function eventCard(ev) {
 /** Crear (ev = null) o editar un evento. */
 function openEventModal(ev, defaults = {}) {
   const isNew = !ev;
+  const tt = state.timetables.find((t) => t.id === ev?.timetable_id) || activeTT();
   const start = ev ? new Date(ev.start_at) : null;
   const end = ev?.end_at ? new Date(ev.end_at) : null;
   const d = {
@@ -1197,7 +1205,7 @@ function openEventModal(ev, defaults = {}) {
   };
   openModal(`
     <form id="event-form" novalidate>
-      <div class="modal-head"><h2>${isNew ? 'Nuevo evento' : 'Editar evento'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      <div class="modal-head"><div class="head-text"><h2>${isNew ? 'Nuevo evento' : 'Editar evento'}</h2>${state.timetables.length > 1 ? `<small class="hint">${esc(tt.name)}</small>` : ''}</div><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <label class="field"><span>Título</span><input type="text" name="title" value="${esc(d.title)}" placeholder="Ej.: Conferencia de marketing digital" required></label>
       <div class="row">
         <label class="field"><span>Fecha</span><input type="date" name="date" value="${d.date}" required></label>
@@ -1263,6 +1271,7 @@ function openEventModal(ev, defaults = {}) {
       }
       if (endLocal && endLocal < startLocal) { err.textContent = 'El final debe ser posterior al inicio'; return; }
       const payload = {
+        timetable_id: tt.id,
         title: form.title.value,
         location: form.location.value,
         description: form.description.value,
@@ -1311,9 +1320,6 @@ function itemCard(item) {
     <button class="icon-btn" data-edit="${item.id}" title="Editar" aria-label="Editar">${icon('pencil')}</button>
   </article>`;
 }
-
-/** Cada horario tiene sus propias tareas y exámenes. */
-const ttItems = (ttId = activeTT().id) => state.items.filter((i) => i.timetable_id === ttId);
 
 function itemsView() {
   const f = state.filter;
@@ -1713,18 +1719,18 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#moda
 /** Detalle de un día: clases + tareas/exámenes. */
 function dayDetail(key, inModal) {
     const date = parseKey(key);
-    const dayTT = timetableForDate(date);
-    const classes = classesOn(date.getDay(), dayTT.id);
-    const items = state.items.filter((i) => dateKey(new Date(i.due_at)) === key);
-    const dayEvents = state.events.filter((ev) => eventDayKeys(ev).includes(key));
+    const dayTT = activeTT();
+    const classes = classesOnDate(dayTT, date);
+    const items = ttItems(dayTT.id).filter((i) => dateKey(new Date(i.due_at)) === key);
+    const dayEvents = ttEvents(dayTT.id).filter((ev) => eventDayKeys(ev).includes(key));
     return `
       <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? `<button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>` : ''}</div>
-      <div class="group-title" style="margin-top:0">Clases${state.timetables.length > 1 ? ` <span>· ${esc(dayTT.name)}</span>` : ''}</div>
+      <div class="group-title" style="margin-top:0">Clases</div>
       ${classes.length ? `<div class="day-classes">${classes.map(({ slot, subject, entry }) => `
         <div class="day-class" style="--c:${subject.color}">
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
           <div><b>${esc(subjectLabel(subject))}</b><div class="info">${entry.room_override || effRoom(subject) ? `<span>${icon('pin')}${esc(entry.room_override || effRoom(subject))}</span>` : ''}${effTeacher(subject) ? `<span>${icon('user')}${esc(effTeacher(subject))}</span>` : ''}</div></div>
-        </div>`).join('')}</div>` : `<p class="hint">${ttDays(dayTT).includes(date.getDay()) ? 'No hay clases este día.' : `Este día no está en «${esc(dayTT.name)}».`}</p>`}
+        </div>`).join('')}</div>` : `<p class="hint">${!ttCovers(dayTT, date) ? `«${esc(dayTT.name)}» no tiene clases en esta fecha.` : ttDays(dayTT).includes(date.getDay()) ? 'No hay clases este día.' : `Este día no está en «${esc(dayTT.name)}».`}</p>`}
       ${dayEvents.length ? `<div class="group-title">Eventos</div>${dayEvents.map(eventCard).join('')}` : ''}
       <div class="group-title">Tareas y exámenes</div>
       ${items.map(itemCard).join('') || '<p class="hint">Nada para este día.</p>'}
@@ -1938,7 +1944,7 @@ function openItemModal(item, defaults = {}) {
       if (timeTouched || !form.subject_id.value || !form.date.value) return;
       const day = parseKey(form.date.value);
       const chosen = subjectById(Number(form.subject_id.value));
-      const classes = classesOn(day.getDay(), tt.id);
+      const classes = classesOnDate(tt, day);
       const cls = classes.find((c) => c.subject.id === chosen.id) || classes.find((c) => topOf(c.subject).id === topOf(chosen).id);
       if (cls) form.time.value = cls.slot.start_time;
     };

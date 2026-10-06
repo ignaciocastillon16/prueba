@@ -506,13 +506,13 @@ export function createApi({ db, mailer, pusher = null, appUrl = '', registerLimi
     await db.tx(async (tx) => {
       // Al borrar los tramos se borran también sus clases (clave foránea en cascada).
       await tx.run('DELETE FROM time_slots WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
-      // Sus asignaturas también se borran; las tareas y exámenes se conservan sin asignatura.
+      // Cada horario es independiente: con él se borran sus asignaturas, tareas, exámenes y eventos.
+      await tx.run('DELETE FROM items WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
+      await tx.run('DELETE FROM events WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
       await tx.run('DELETE FROM subjects WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
       await tx.run('DELETE FROM timetables WHERE id = ?', existing.id);
       const nextActive = req.user.active_timetable_id === existing.id ? all.find((x) => x.id !== existing.id).id : req.user.active_timetable_id;
       if (nextActive !== req.user.active_timetable_id) await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', nextActive, uid(req));
-      // Sus tareas y exámenes no se pierden: pasan al horario que queda abierto.
-      await tx.run('UPDATE items SET timetable_id = ? WHERE timetable_id = ? AND user_id = ?', nextActive, existing.id, uid(req));
     });
     res.json(await timetablesPayload(uid(req)));
   });
@@ -665,13 +665,15 @@ export function createApi({ db, mailer, pusher = null, appUrl = '', registerLimi
 
   /* ---------- eventos (conferencias, excursiones…) ---------- */
   const serializeEvent = (e) => ({
-    id: e.id, title: e.title, description: e.description, location: e.location, color: e.color,
+    id: e.id, timetable_id: e.timetable_id, title: e.title, description: e.description, location: e.location, color: e.color,
     start_at: e.start_at, end_at: e.end_at, all_day: Boolean(e.all_day),
     reminder_minutes: e.reminder_minutes, reminder_sent: Boolean(e.reminder_sent_at),
   });
   const getEvent = async (userId, eventId) => db.get('SELECT * FROM events WHERE id = ? AND user_id = ?', eventId, userId);
-  function eventInput(b) {
+  // Cada evento pertenece a un horario: el indicado o, si no, el abierto.
+  async function eventInput(userId, b, activeTimetableId) {
     const e = {
+      timetable_id: b.timetable_id ? id(b.timetable_id) : activeTimetableId,
       title: str(b.title, 'El título', { max: 20000, required: true }),
       description: str(b.description, 'La descripción', { max: 200000 }),
       location: str(b.location, 'El lugar', { max: 20000 }),
@@ -682,28 +684,29 @@ export function createApi({ db, mailer, pusher = null, appUrl = '', registerLimi
       reminder_minutes: b.reminder_minutes === null || b.reminder_minutes === undefined || b.reminder_minutes === '' ? null : int(b.reminder_minutes, 'El aviso', 0, 60 * 24 * 30),
     };
     if (e.end_at && e.end_at < e.start_at) throw bad('El final debe ser posterior al inicio');
+    if (!(await getTimetable(userId, e.timetable_id))) throw notFound('Horario');
     return e;
   }
   r.get('/events', async (req, res) => {
     res.json((await db.all('SELECT * FROM events WHERE user_id = ? ORDER BY start_at, id', uid(req))).map(serializeEvent));
   });
   r.post('/events', async (req, res) => {
-    const e = eventInput(req.body);
+    const e = await eventInput(uid(req), req.body, req.user.active_timetable_id);
     const { insertId } = await db.run(
-      'INSERT INTO events (user_id, title, description, location, color, start_at, end_at, all_day, reminder_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      uid(req), e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, new Date().toISOString()
+      'INSERT INTO events (user_id, timetable_id, title, description, location, color, start_at, end_at, all_day, reminder_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      uid(req), e.timetable_id, e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, new Date().toISOString()
     );
     res.status(201).json(serializeEvent(await getEvent(uid(req), insertId)));
   });
   r.put('/events/:id', async (req, res) => {
     const existing = await getEvent(uid(req), id(req.params.id));
     if (!existing) throw notFound('Evento');
-    const e = eventInput({ ...serializeEvent(existing), ...req.body });
+    const e = await eventInput(uid(req), { ...serializeEvent(existing), ...req.body }, req.user.active_timetable_id);
     const reset = e.start_at !== existing.start_at || e.reminder_minutes !== existing.reminder_minutes;
     await db.run(
-      `UPDATE events SET title = ?, description = ?, location = ?, color = ?, start_at = ?, end_at = ?, all_day = ?, reminder_minutes = ?,
+      `UPDATE events SET timetable_id = ?, title = ?, description = ?, location = ?, color = ?, start_at = ?, end_at = ?, all_day = ?, reminder_minutes = ?,
        reminder_sent_at = CASE WHEN ? = 1 THEN NULL ELSE reminder_sent_at END WHERE id = ?`,
-      e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, reset ? 1 : 0, existing.id
+      e.timetable_id, e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, reset ? 1 : 0, existing.id
     );
     res.json(serializeEvent(await getEvent(uid(req), existing.id)));
   });

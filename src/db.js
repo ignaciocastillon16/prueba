@@ -268,6 +268,7 @@ const MIGRATIONS = [
   'ALTER TABLE subjects ADD COLUMN parent_id INT NULL',
   'ALTER TABLE timetables ADD COLUMN visible_days VARCHAR(40) NULL',
   'ALTER TABLE items ADD COLUMN timetable_id INT NULL',
+  'ALTER TABLE events ADD COLUMN timetable_id INT NULL',
 ];
 
 /*
@@ -331,6 +332,8 @@ async function migrate(api) {
   // Tareas por horario: las existentes van al horario de su asignatura o, si no tienen, al abierto.
   await api.run('UPDATE items SET timetable_id = (SELECT s.timetable_id FROM subjects s WHERE s.id = items.subject_id) WHERE timetable_id IS NULL AND subject_id IS NOT NULL');
   await api.run('UPDATE items SET timetable_id = (SELECT u.active_timetable_id FROM users u WHERE u.id = items.user_id) WHERE timetable_id IS NULL');
+  // Los eventos también son de un horario: los que ya existían pasan al que estaba abierto.
+  await api.run('UPDATE events SET timetable_id = (SELECT u.active_timetable_id FROM users u WHERE u.id = events.user_id) WHERE timetable_id IS NULL');
   await widenMysqlText(api);
 }
 
