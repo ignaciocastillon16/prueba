@@ -232,6 +232,7 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN tt_background VARCHAR(20) NOT NULL DEFAULT 'rayas'",
   'ALTER TABLE users ADD COLUMN active_timetable_id INT NULL',
   'ALTER TABLE time_slots ADD COLUMN timetable_id INT NULL',
+  'ALTER TABLE subjects ADD COLUMN timetable_id INT NULL',
 ];
 async function migrate(api) {
   for (const sql of MIGRATIONS) {
@@ -253,6 +254,41 @@ async function migrate(api) {
       );
       await t.run('UPDATE time_slots SET timetable_id = ? WHERE user_id = ? AND timetable_id IS NULL', insertId, u.id);
       await t.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', insertId, u.id);
+    });
+  }
+  await migrateSubjectsToTimetables(api);
+}
+
+/*
+ * Asignaturas por horario: cada asignatura sin horario se asigna al horario que la usa
+ * (o al activo). Si la usan varios horarios, cada uno recibe su propia copia y sus clases
+ * pasan a apuntar a ella. Las tareas y exámenes siguen con la asignatura original.
+ */
+async function migrateSubjectsToTimetables(api) {
+  const orphans = await api.all('SELECT s.*, u.active_timetable_id FROM subjects s JOIN users u ON u.id = s.user_id WHERE s.timetable_id IS NULL');
+  for (const subject of orphans) {
+    await api.tx(async (t) => {
+      const using = (
+        await t.all(
+          `SELECT DISTINCT sl.timetable_id FROM schedule_entries e JOIN time_slots sl ON sl.id = e.slot_id
+           WHERE e.subject_id = ? AND sl.timetable_id IS NOT NULL ORDER BY sl.timetable_id`,
+          subject.id
+        )
+      ).map((r) => r.timetable_id);
+      const fallback = subject.active_timetable_id ?? (await t.get('SELECT id FROM timetables WHERE user_id = ? ORDER BY id', subject.user_id))?.id;
+      const owner = using.includes(subject.active_timetable_id) ? subject.active_timetable_id : using[0] ?? fallback;
+      if (owner == null) return;
+      await t.run('UPDATE subjects SET timetable_id = ? WHERE id = ?', owner, subject.id);
+      for (const ttId of using.filter((x) => x !== owner)) {
+        const copy = await t.run(
+          'INSERT INTO subjects (user_id, timetable_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          subject.user_id, ttId, subject.name, subject.short_name, subject.color, subject.room, subject.teacher
+        );
+        await t.run(
+          'UPDATE schedule_entries SET subject_id = ? WHERE subject_id = ? AND slot_id IN (SELECT id FROM time_slots WHERE timetable_id = ?)',
+          copy.insertId, subject.id, ttId
+        );
+      }
     });
   }
 }

@@ -287,8 +287,20 @@ test('varios horarios', async () => {
   const slots2 = copy.body.slots.filter((s) => s.timetable_id === tt2);
   assert.equal(slots2.length, 7, 'copia los tramos');
   const copied = copy.body.schedule.find((e) => slots2.some((s) => s.id === e.slot_id));
-  assert.equal(copied.subject_id, subj.id, 'copia las clases');
+  const subj2 = copy.body.subjects.find((x) => x.timetable_id === tt2);
+  assert.ok(subj2, 'copia las asignaturas');
+  assert.notEqual(subj2.id, subj.id, 'como asignaturas propias del nuevo horario');
+  assert.equal(subj2.name, 'Arte');
+  assert.equal(copied.subject_id, subj2.id, 'las clases copiadas usan la asignatura copiada');
   assert.equal(copied.room_override, 'T1');
+  assert.equal(copy.body.subjects.find((x) => x.id === subj.id).timetable_id, tt1, 'la original sigue en su horario');
+  // Las asignaturas nuevas van al horario abierto y no se pueden mezclar entre horarios
+  const own2 = (await c('POST', '/subjects', { name: 'Solo del 2º', color: '#335577' })).body;
+  assert.equal(own2.timetable_id, tt2);
+  assert.equal((await c('PUT', '/schedule', { slot_id: slots2[0].id, day: 3, subject_id: subj.id })).status, 400, 'asignatura de otro horario');
+  assert.equal((await c('PUT', '/schedule', { slot_id: slots2[0].id, day: 3, subject_id: own2.id })).status, 200);
+  // Una tarea con una asignatura del horario que se va a borrar
+  const task = (await c('POST', '/items', { type: 'task', title: 'Con asignatura del 2º', due_at: '2027-03-01T10:00:00Z', subject_id: own2.id })).body;
   assert.equal(copy.body.timetables.find((t) => t.id === tt2).start_date, '2027-02-01');
 
   const empty = await c('POST', '/timetables', { name: 'Vacío' });
@@ -319,6 +331,10 @@ test('varios horarios', async () => {
   assert.notEqual(del.body.user.active_timetable_id, tt2);
   assert.equal(del.body.slots.filter((s) => s.timetable_id === tt2).length, 0);
   assert.equal(del.body.schedule.filter((e) => slots2.some((s) => s.id === e.slot_id)).length, 0, 'borra sus clases');
+  assert.equal(del.body.subjects.filter((x) => x.timetable_id === tt2).length, 0, 'borra sus asignaturas');
+  const kept = (await c('GET', '/items')).body.find((i) => i.id === task.id);
+  assert.ok(kept, 'la tarea se conserva');
+  assert.equal(kept.subject_id, null, 'sin asignatura');
   await c('DELETE', `/timetables/${empty.body.id}`);
   assert.equal((await c('DELETE', `/timetables/${tt1}`)).status, 400, 'no se borra el único');
 });
@@ -335,15 +351,32 @@ test('migración: los datos antiguos pasan a «Mi horario»', async () => {
   await old.run('DELETE FROM timetables WHERE user_id = ?', u.insertId);
   await old.run("INSERT INTO time_slots (user_id, start_time, end_time, label) VALUES (?, '08:00', '09:00', '1')", u.insertId);
   await old.close();
+  // Primer arranque: crea «Mi horario». Luego se simula un segundo horario que comparte asignatura (versión anterior).
+  old = await openDb({ file });
+  const tt1 = (await old.get('SELECT id FROM timetables WHERE user_id = ?', u.insertId)).id;
+  const tt2 = (await old.run("INSERT INTO timetables (user_id, name, created_at) VALUES (?, 'Segundo', '2026-01-01')", u.insertId)).insertId;
+  const shared = (await old.run("INSERT INTO subjects (user_id, name, color) VALUES (?, 'Compartida', '#123456')", u.insertId)).insertId;
+  await old.run('UPDATE subjects SET timetable_id = NULL WHERE id = ?', shared);
+  const slA = (await old.get('SELECT id FROM time_slots WHERE timetable_id = ?', tt1)).id;
+  const slB = (await old.run("INSERT INTO time_slots (user_id, timetable_id, start_time, end_time) VALUES (?, ?, '10:00', '11:00')", u.insertId, tt2)).insertId;
+  await old.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day) VALUES (?, ?, ?, 1)', u.insertId, shared, slA);
+  await old.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day) VALUES (?, ?, ?, 1)', u.insertId, shared, slB);
+  await old.close();
   old = await openDb({ file });
   const tts = await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId);
-  assert.equal(tts.length, 1);
+  assert.equal(tts.length, 2);
   assert.equal(tts[0].name, 'Mi horario');
   assert.equal(tts[0].background, 'puntos', 'conserva el fondo elegido');
   assert.equal((await old.get('SELECT timetable_id FROM time_slots WHERE user_id = ?', u.insertId)).timetable_id, tts[0].id);
   assert.equal((await old.get('SELECT active_timetable_id FROM users WHERE id = ?', u.insertId)).active_timetable_id, tts[0].id);
+  const subs = await old.all("SELECT * FROM subjects WHERE user_id = ? AND name = 'Compartida' ORDER BY id", u.insertId);
+  assert.equal(subs.length, 2, 'la asignatura compartida se reparte en dos');
+  assert.deepEqual(subs.map((x) => x.timetable_id).sort(), [tts[0].id, tts[1].id].sort());
+  const entryB = await old.get('SELECT subject_id FROM schedule_entries WHERE slot_id = ?', slB);
+  assert.equal(subs.find((x) => x.id === entryB.subject_id).timetable_id, tt2, 'cada clase apunta a la asignatura de su horario');
   await old.close();
   old = await openDb({ file });
-  assert.equal((await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId)).length, 1, 'no se duplica al volver a arrancar');
+  assert.equal((await old.all('SELECT * FROM timetables WHERE user_id = ?', u.insertId)).length, 2, 'no se duplica al volver a arrancar');
+  assert.equal((await old.all("SELECT * FROM subjects WHERE name = 'Compartida'")).length, 2, 'ni las asignaturas');
   await old.close();
 });

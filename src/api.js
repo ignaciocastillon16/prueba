@@ -211,7 +211,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       mail_configured: mailer.configured,
       push_available: Boolean(pusher),
       push_devices: await pushDevices(uid(req)),
-      subjects: (await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))),
+      subjects: await listSubjects(uid(req)),
       timetables: await listTimetables(uid(req)),
       slots: await listSlots(uid(req)),
       schedule: await listSchedule(uid(req)),
@@ -321,15 +321,20 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       teacher: str(b.teacher, 'El profesor', { max: 80 }),
     };
   }
+  const SUBJECT_COLS = 'id, timetable_id, name, short_name, color, room, teacher';
+  const listSubjects = async (userId) => db.all(`SELECT ${SUBJECT_COLS} FROM subjects WHERE user_id = ? ORDER BY LOWER(name)`, userId);
   const getSubject = async (userId, subjectId) =>
-    (await db.get('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE id = ? AND user_id = ?', subjectId, userId));
+    (await db.get(`SELECT ${SUBJECT_COLS} FROM subjects WHERE id = ? AND user_id = ?`, subjectId, userId));
 
   r.get('/subjects', async (req, res) => {
-    res.json((await db.all('SELECT id, name, short_name, color, room, teacher FROM subjects WHERE user_id = ? ORDER BY LOWER(name)', uid(req))));
+    res.json(await listSubjects(uid(req)));
   });
+  // Cada asignatura pertenece a un horario (por defecto, el que está abierto).
   r.post('/subjects', async (req, res) => {
     const s = subjectInput(req.body);
-    const { insertId } = await db.run('INSERT INTO subjects (user_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?)', uid(req), s.name, s.short_name, s.color, s.room, s.teacher);
+    const ttId = req.body.timetable_id ? id(req.body.timetable_id) : req.user.active_timetable_id;
+    if (!(await getTimetable(uid(req), ttId))) throw notFound('Horario');
+    const { insertId } = await db.run('INSERT INTO subjects (user_id, timetable_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?)', uid(req), ttId, s.name, s.short_name, s.color, s.room, s.teacher);
     res.status(201).json(await getSubject(uid(req), insertId));
   });
   r.put('/subjects/:id', async (req, res) => {
@@ -405,6 +410,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   const timetablesPayload = async (userId) => ({
     user: publicUser(await db.get('SELECT * FROM users WHERE id = ?', userId)),
     timetables: await listTimetables(userId),
+    subjects: await listSubjects(userId),
     slots: await listSlots(userId),
     schedule: await listSchedule(userId),
   });
@@ -423,6 +429,15 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
         uid(req), t.name, t.start_date, t.end_date, req.body.background ? t.background : source?.background || 'rayas', new Date().toISOString()
       );
       if (source) {
+        // Las asignaturas se copian como asignaturas nuevas de este horario.
+        const subjectMap = new Map();
+        for (const sub of await tx.all('SELECT * FROM subjects WHERE timetable_id = ?', source.id)) {
+          const c = await tx.run(
+            'INSERT INTO subjects (user_id, timetable_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            uid(req), insertId, sub.name, sub.short_name, sub.color, sub.room, sub.teacher
+          );
+          subjectMap.set(sub.id, c.insertId);
+        }
         const slots = await tx.all('SELECT * FROM time_slots WHERE timetable_id = ? ORDER BY start_time', source.id);
         for (const s of slots) {
           const copy = await tx.run(
@@ -432,7 +447,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
           for (const e of await tx.all('SELECT * FROM schedule_entries WHERE slot_id = ?', s.id)) {
             await tx.run(
               'INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)',
-              uid(req), e.subject_id, copy.insertId, e.day, e.room_override
+              uid(req), subjectMap.get(e.subject_id) ?? e.subject_id, copy.insertId, e.day, e.room_override
             );
           }
         }
@@ -463,6 +478,8 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     await db.tx(async (tx) => {
       // Al borrar los tramos se borran también sus clases (clave foránea en cascada).
       await tx.run('DELETE FROM time_slots WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
+      // Sus asignaturas también se borran; las tareas y exámenes se conservan sin asignatura.
+      await tx.run('DELETE FROM subjects WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
       await tx.run('DELETE FROM timetables WHERE id = ?', existing.id);
       if (req.user.active_timetable_id === existing.id) {
         await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', all.find((x) => x.id !== existing.id).id, uid(req));
@@ -477,12 +494,15 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   r.put('/schedule', async (req, res) => {
     const day = int(req.body.day, 'Día', 0, 6);
     const slotId = id(req.body.slot_id);
-    if (!(await db.get('SELECT 1 FROM time_slots WHERE id = ? AND user_id = ?', slotId, uid(req)))) throw notFound('Tramo');
+    const slot = await db.get('SELECT id, timetable_id FROM time_slots WHERE id = ? AND user_id = ?', slotId, uid(req));
+    if (!slot) throw notFound('Tramo');
     if (req.body.subject_id === null || req.body.subject_id === undefined || req.body.subject_id === '') {
       (await db.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slotId, day));
     } else {
       const subjectId = id(req.body.subject_id);
-      if (!await getSubject(uid(req), subjectId)) throw notFound('Asignatura');
+      const subject = await getSubject(uid(req), subjectId);
+      if (!subject) throw notFound('Asignatura');
+      if (subject.timetable_id !== slot.timetable_id) throw bad('Esa asignatura es de otro horario');
       const room = str(req.body.room_override, 'El aula', { max: 60 });
       await db.tx(async (t) => {
         await t.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slotId, day);
