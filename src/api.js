@@ -321,7 +321,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       teacher: str(b.teacher, 'El profesor', { max: 80 }),
     };
   }
-  const SUBJECT_COLS = 'id, timetable_id, name, short_name, color, room, teacher';
+  const SUBJECT_COLS = 'id, timetable_id, parent_id, name, short_name, color, room, teacher';
   const listSubjects = async (userId) => db.all(`SELECT ${SUBJECT_COLS} FROM subjects WHERE user_id = ? ORDER BY LOWER(name)`, userId);
   const getSubject = async (userId, subjectId) =>
     (await db.get(`SELECT ${SUBJECT_COLS} FROM subjects WHERE id = ? AND user_id = ?`, subjectId, userId));
@@ -331,10 +331,20 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   });
   // Cada asignatura pertenece a un horario (por defecto, el que está abierto).
   r.post('/subjects', async (req, res) => {
-    const s = subjectInput(req.body);
-    const ttId = req.body.timetable_id ? id(req.body.timetable_id) : req.user.active_timetable_id;
+    // Con parent_id se crea una subasignatura (un solo nivel), en el mismo horario que su asignatura.
+    let parent = null;
+    if (req.body.parent_id) {
+      parent = await getSubject(uid(req), id(req.body.parent_id));
+      if (!parent) throw notFound('Asignatura');
+      if (parent.parent_id) throw bad('Una subasignatura no puede tener subasignaturas');
+    }
+    const s = subjectInput({ color: parent?.color, ...req.body });
+    const ttId = parent ? parent.timetable_id : req.body.timetable_id ? id(req.body.timetable_id) : req.user.active_timetable_id;
     if (!(await getTimetable(uid(req), ttId))) throw notFound('Horario');
-    const { insertId } = await db.run('INSERT INTO subjects (user_id, timetable_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?)', uid(req), ttId, s.name, s.short_name, s.color, s.room, s.teacher);
+    const { insertId } = await db.run(
+      'INSERT INTO subjects (user_id, timetable_id, parent_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      uid(req), ttId, parent?.id ?? null, s.name, s.short_name, s.color, s.room, s.teacher
+    );
     res.status(201).json(await getSubject(uid(req), insertId));
   });
   r.put('/subjects/:id', async (req, res) => {
@@ -345,8 +355,14 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     res.json(await getSubject(uid(req), existing.id));
   });
   r.delete('/subjects/:id', async (req, res) => {
-    const { changes } = (await db.run('DELETE FROM subjects WHERE id = ? AND user_id = ?', id(req.params.id), uid(req)));
-    if (!changes) throw notFound('Asignatura');
+    const subjectId = id(req.params.id);
+    const existing = await getSubject(uid(req), subjectId);
+    if (!existing) throw notFound('Asignatura');
+    await db.tx(async (t) => {
+      // Al borrar una asignatura se borran sus subasignaturas.
+      await t.run('DELETE FROM subjects WHERE parent_id = ? AND user_id = ?', subjectId, uid(req));
+      await t.run('DELETE FROM subjects WHERE id = ? AND user_id = ?', subjectId, uid(req));
+    });
     res.status(204).end();
   });
 
@@ -431,10 +447,11 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       if (source) {
         // Las asignaturas se copian como asignaturas nuevas de este horario.
         const subjectMap = new Map();
-        for (const sub of await tx.all('SELECT * FROM subjects WHERE timetable_id = ?', source.id)) {
+        const sourceSubjects = await tx.all('SELECT * FROM subjects WHERE timetable_id = ? ORDER BY parent_id IS NOT NULL, id', source.id);
+        for (const sub of sourceSubjects) {
           const c = await tx.run(
-            'INSERT INTO subjects (user_id, timetable_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            uid(req), insertId, sub.name, sub.short_name, sub.color, sub.room, sub.teacher
+            'INSERT INTO subjects (user_id, timetable_id, parent_id, name, short_name, color, room, teacher) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            uid(req), insertId, sub.parent_id ? subjectMap.get(sub.parent_id) ?? null : null, sub.name, sub.short_name, sub.color, sub.room, sub.teacher
           );
           subjectMap.set(sub.id, c.insertId);
         }

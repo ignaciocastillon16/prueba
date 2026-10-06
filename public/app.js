@@ -148,8 +148,15 @@ const state = {
   filter: { type: 'all', subject: '', showDone: pref('showDone', false) },
 };
 const subjectById = (id) => state.subjects.find((s) => s.id === id);
-/** Asignaturas de un horario (cada horario tiene las suyas). */
-const ttSubjects = (ttId) => state.subjects.filter((s) => s.timetable_id === ttId);
+/** Asignaturas principales de un horario (cada horario tiene las suyas). */
+const ttSubjects = (ttId) => state.subjects.filter((s) => s.timetable_id === ttId && !s.parent_id);
+/* Subasignaturas: un nivel por debajo de una asignatura; heredan aula y profesor si los dejan vacíos. */
+const subsOf = (id) => state.subjects.filter((s) => s.parent_id === id);
+const parentOf = (s) => (s?.parent_id ? subjectById(s.parent_id) : null);
+const topOf = (s) => parentOf(s) || s;
+const subjectLabel = (s) => (!s ? '' : parentOf(s) ? `${parentOf(s).name} · ${s.name}` : s.name);
+const effRoom = (s) => s?.room || parentOf(s)?.room || '';
+const effTeacher = (s) => s?.teacher || parentOf(s)?.teacher || '';
 const itemById = (id) => state.items.find((i) => i.id === id);
 const visibleDays = () => DAY_ORDER.filter((d) => state.user.visible_days.includes(d));
 /* Varios horarios: cada uno tiene sus tramos y clases. */
@@ -355,14 +362,10 @@ const ACTIONS = {
   today: () => { state.cursor = startOfMonth(new Date()); state.selectedDay = dateKey(new Date()); renderView(); },
   newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, returnTo }),
   newSubject: () => openSubjectModal(null),
+  newSub: (d) => openSubjectModal(null, subjectById(Number(d.parent))),
   editSubject: (d) => openSubjectModal(subjectById(Number(d.id))),
   deleteSubject: async (d) => {
-    const s = subjectById(Number(d.id));
-    if (!confirm(`¿Eliminar la asignatura «${s.name}»? Se quitará del horario y sus tareas quedarán sin asignatura.`)) return;
-    if ((await attempt(() => api('DELETE', `/subjects/${s.id}`), 'Asignatura eliminada')) !== undefined) {
-      await loadAll();
-      renderView();
-    }
+    deleteSubjectFlow(subjectById(Number(d.id)));
   },
   goto: (d) => { location.hash = d.view; },
   pickBackground: () => openBackgroundModal(),
@@ -448,7 +451,7 @@ function monthView() {
     const classes = state.showClasses ? classesFor(d) : [];
     return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''}" data-date="${k}">
       <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea" aria-label="Añadir tarea">${icon('plus')}</button></div>
-      ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="--c:${g.subject.color}" title="${esc(`${g.start}–${g.end} ${g.subject.name}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
+      ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="--c:${g.subject.color}" title="${esc(`${g.start}–${g.end} ${subjectLabel(g.subject)}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
       <div class="cell-items">${(byDay.get(k) || []).map(itemChip).join('')}</div>
     </div>`;
   });
@@ -496,7 +499,7 @@ function dayBlocks(day, slots = ttSlots(activeTT().id)) {
     const at = (k) => {
       const entry = state.schedule.find((e) => e.slot_id === slots[k].id && e.day === day);
       const subject = entry && subjectById(entry.subject_id);
-      return subject ? { entry, subject, room: entry.room_override || subject.room } : null;
+      return subject ? { entry, subject, room: entry.room_override || effRoom(subject) } : null;
     };
     const first = at(i);
     let k = i + 1;
@@ -571,7 +574,7 @@ function weekView() {
       const ids = b.slots.map((x) => x.id).join(',');
       if (b.subject) {
         const s = b.subject;
-        const tip = [s.name, `${startT}–${endT}`, b.room && `Aula ${b.room}`, s.teacher].filter(Boolean).join(' · ');
+        const tip = [subjectLabel(s), `${startT}–${endT}`, b.room && `Aula ${b.room}`, effTeacher(s)].filter(Boolean).join(' · ');
         cells += `<div class="tt-cell filled ${isNow ? 'now' : ''}" data-slots="${ids}" data-day="${d}" style="${area};--c:${s.color};--ink:${textOn(s.color)}" title="${esc(tip)}">
           <div class="tt-name"><span>${esc(s.name)}</span></div>
           ${b.room ? `<div class="tt-room">${esc(b.room)}</div>` : ''}
@@ -1015,7 +1018,7 @@ function itemCard(item) {
     <div class="body">
       <div class="meta">
         <span class="badge ${item.type}">${item.type === 'exam' ? 'Examen' : 'Tarea'}</span>
-        ${s ? `<span><span class="dot" style="--c:${s.color}"></span> ${esc(s.name)}</span>` : ''}
+        ${s ? `<span><span class="dot" style="--c:${s.color}"></span> ${esc(subjectLabel(s))}</span>` : ''}
         <span>${icon('clock')}${esc(fmtDateTime(d))}</span>
         <span class="${overdue ? 'overdue' : ''}">${overdue ? 'Vencida ' : ''}${esc(relative(d))}</span>
         ${item.reminder_minutes !== null ? `<span title="Aviso: ${esc(rem ? rem[1] : `${item.reminder_minutes} min antes`)}">${item.reminder_sent ? icon('sent') : icon('bell')}</span>` : ''}
@@ -1032,7 +1035,7 @@ function itemCard(item) {
 
 function itemsView() {
   const f = state.filter;
-  const list = state.items.filter((i) => (f.type === 'all' || i.type === f.type) && (!f.subject || i.subject_id === Number(f.subject)));
+  const list = state.items.filter((i) => (f.type === 'all' || i.type === f.type) && (!f.subject || i.subject_id === Number(f.subject) || subjectById(i.subject_id)?.parent_id === Number(f.subject)));
   const now = new Date();
   const todayKey = dateKey(now);
   const in7 = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 8);
@@ -1056,7 +1059,8 @@ function itemsView() {
       <select id="subject-filter" style="width:auto">
         <option value="">Todas las asignaturas</option>
         ${state.timetables.map((t) => {
-          const opts = ttSubjects(t.id).map((s) => `<option value="${s.id}" ${String(s.id) === f.subject ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+          const opt = (s, indent) => `<option value="${s.id}" ${String(s.id) === f.subject ? 'selected' : ''}>${indent ? '\u00a0\u00a0\u00a0↳ ' : ''}${esc(s.name)}</option>`;
+          const opts = ttSubjects(t.id).map((s) => opt(s, false) + subsOf(s.id).map((c) => opt(c, true)).join('')).join('');
           return !opts ? '' : state.timetables.length > 1 ? `<optgroup label="${esc(t.name)}">${opts}</optgroup>` : opts;
         }).join('')}
       </select>
@@ -1091,7 +1095,8 @@ document.addEventListener('change', (e) => {
    ============================================================ */
 function subjectsView() {
   const activeSlots = ttSlots(activeTT().id);
-  const hours = (id) => state.schedule.filter((e) => e.subject_id === id && activeSlots.some((s) => s.id === e.slot_id)).length;
+  const hours = (id) =>
+    state.schedule.filter((e) => (e.subject_id === id || subjectById(e.subject_id)?.parent_id === id) && activeSlots.some((s) => s.id === e.slot_id)).length;
   const list = ttSubjects(activeTT().id);
   return `
     <div class="toolbar tt-toolbar">
@@ -1107,6 +1112,10 @@ function subjectsView() {
           <div class="info">${icon('pin')}${s.room ? `Aula ${esc(s.room)}` : 'Sin aula'}</div>
           <div class="info">${icon('user')}${esc(s.teacher || 'Sin profesor asignado')}</div>
           <div class="info">${icon('clock')}${plural(hours(s.id), 'clase', 'clases')} a la semana</div>
+          <div class="subs">
+            ${subsOf(s.id).map((c) => `<button type="button" class="sub-chip" data-action="editSubject" data-id="${c.id}" style="--c:${c.color}" title="Editar ${esc(c.name)}"><i></i>${esc(c.name)}${c.room ? `<small>${esc(c.room)}</small>` : ''}</button>`).join('')}
+            <button type="button" class="sub-chip add" data-action="newSub" data-parent="${s.id}">${icon('plus')}Subasignatura</button>
+          </div>
           <div class="actions">
             <button class="btn btn-sm" data-action="editSubject" data-id="${s.id}">${icon('pencil')}Editar</button>
             <button class="btn btn-sm btn-danger" data-action="deleteSubject" data-id="${s.id}">${icon('trash')}Eliminar</button>
@@ -1116,19 +1125,37 @@ function subjectsView() {
     </div>`;
 }
 
-function openSubjectModal(subject) {
-  const s = subject || { name: '', short_name: '', color: PALETTE[(ttSubjects(activeTT().id).length * 5) % PALETTE.length], room: '', teacher: '' };
+async function deleteSubjectFlow(s) {
+  const subs = subsOf(s.id).length;
+  const what = s.parent_id ? 'la subasignatura' : 'la asignatura';
+  if (!confirm(`¿Eliminar ${what} «${s.name}»?${subs === 1 ? ' También se borrará su subasignatura.' : subs > 1 ? ` También se borrarán sus ${subs} subasignaturas.` : ''} Se quitará del horario y sus tareas quedarán sin asignatura.`)) return false;
+  if ((await attempt(() => api('DELETE', `/subjects/${s.id}`), s.parent_id ? 'Subasignatura eliminada' : 'Asignatura eliminada')) === undefined) return false;
+  await loadAll();
+  renderView();
+  return true;
+}
+
+/** Crear o editar una asignatura; con `parent`, una subasignatura de esa asignatura. */
+function openSubjectModal(subject, parent = null) {
+  parent = parent || parentOf(subject);
+  const s = subject || {
+    name: '', short_name: '', room: '', teacher: '',
+    color: parent ? parent.color : PALETTE[(ttSubjects(activeTT().id).length * 5) % PALETTE.length],
+  };
+  const inherit = (value, label) => (parent ? `Igual que ${parent.name}${value ? ` (${value})` : ''}` : label);
+  const title = subject ? (parent ? 'Editar subasignatura' : 'Editar asignatura') : parent ? `Nueva subasignatura de ${parent.name}` : 'Nueva asignatura';
   openModal(`
     <form id="subject-form">
-      <div class="modal-head"><h2>${subject ? 'Editar asignatura' : 'Nueva asignatura'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      <div class="modal-head"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <div class="row">
-        <label class="field" style="flex:3"><span>Nombre</span><input type="text" name="name" value="${esc(s.name)}" required maxlength="60" placeholder="Matemáticas"></label>
+        <label class="field" style="flex:3"><span>Nombre</span><input type="text" name="name" value="${esc(s.name)}" required maxlength="60" placeholder="${parent ? 'Química' : 'Matemáticas'}"></label>
         <label class="field" style="flex:1"><span>Abreviatura</span><input type="text" name="short_name" value="${esc(s.short_name)}" maxlength="6" placeholder="MAT"></label>
       </div>
       <div class="row">
-        <label class="field"><span>Aula</span><input type="text" name="room" value="${esc(s.room)}" maxlength="60" placeholder="B-12"></label>
-        <label class="field"><span>Profesor/a</span><input type="text" name="teacher" value="${esc(s.teacher)}" maxlength="80" placeholder="Ana García"></label>
+        <label class="field"><span>Aula</span><input type="text" name="room" value="${esc(s.room)}" maxlength="60" placeholder="${esc(inherit(parent?.room, 'B-12'))}"></label>
+        <label class="field"><span>Profesor/a</span><input type="text" name="teacher" value="${esc(s.teacher)}" maxlength="80" placeholder="${esc(inherit(parent?.teacher, 'Ana García'))}"></label>
       </div>
+      ${parent ? `<p class="hint" style="margin:-6px 0 14px">Si dejas el aula o el profesor vacíos, se usan los de «${esc(parent.name)}».</p>` : ''}
       <div class="field"><span>Color</span>
         <div class="swatches">
           ${PALETTE.map((c) => `<button type="button" class="swatch ${c === s.color ? 'active' : ''}" data-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}
@@ -1136,10 +1163,15 @@ function openSubjectModal(subject) {
         </div>
       </div>
       <div class="error" id="form-error"></div>
-      <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">Guardar</button></div>
+      <div class="modal-foot">
+        ${subject ? `<button type="button" class="btn btn-danger left" id="subj-delete">${icon('trash')}Eliminar</button>` : ''}
+        <button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">Guardar</button>
+      </div>
     </form>`, (root) => {
     const form = $('#subject-form', root);
-    $('input[name=name]', form).focus();
+    if (!window.matchMedia('(pointer: coarse)').matches) $('input[name=name]', form).focus();
+    const del = $('#subj-delete', form);
+    if (del) del.onclick = async () => { if (await deleteSubjectFlow(subject)) closeModal(); };
     $('.swatches', form).onclick = (e) => {
       const b = e.target.closest('.swatch');
       if (!b) return;
@@ -1151,13 +1183,15 @@ function openSubjectModal(subject) {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(form));
       try {
-        const saved = subject ? await api('PUT', `/subjects/${subject.id}`, data) : await api('POST', '/subjects', { ...data, timetable_id: activeTT().id });
+        const saved = subject
+          ? await api('PUT', `/subjects/${subject.id}`, data)
+          : await api('POST', '/subjects', { ...data, timetable_id: parent ? parent.timetable_id : activeTT().id, parent_id: parent?.id ?? null });
         const i = state.subjects.findIndex((x) => x.id === saved.id);
         if (i >= 0) state.subjects[i] = saved; else state.subjects.push(saved);
         state.subjects.sort((a, b) => a.name.localeCompare(b.name, 'es'));
         closeModal();
         refresh();
-        toast('Asignatura guardada');
+        toast(parent ? 'Subasignatura guardada' : 'Asignatura guardada');
       } catch (err) {
         $('#form-error', form).textContent = err.message;
       }
@@ -1395,7 +1429,7 @@ function dayDetail(key, inModal) {
       ${classes.length ? `<div class="day-classes">${classes.map(({ slot, subject, entry }) => `
         <div class="day-class" style="--c:${subject.color}">
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
-          <div><b>${esc(subject.name)}</b><div class="info">${entry.room_override || subject.room ? `<span>${icon('pin')}${esc(entry.room_override || subject.room)}</span>` : ''}${subject.teacher ? `<span>${icon('user')}${esc(subject.teacher)}</span>` : ''}</div></div>
+          <div><b>${esc(subjectLabel(subject))}</b><div class="info">${entry.room_override || effRoom(subject) ? `<span>${icon('pin')}${esc(entry.room_override || effRoom(subject))}</span>` : ''}${effTeacher(subject) ? `<span>${icon('user')}${esc(effTeacher(subject))}</span>` : ''}</div></div>
         </div>`).join('')}</div>` : `<p class="hint">${state.user.visible_days.includes(date.getDay()) ? 'No hay clases este día.' : 'Este día no está en tu semana escolar.'}</p>`}
       <div class="group-title">Tareas y exámenes</div>
       ${items.map(itemCard).join('') || '<p class="hint">Nada para este día.</p>'}
@@ -1421,6 +1455,13 @@ function openSlotModal(slotIds, day) {
   const entry = state.schedule.find((e) => e.slot_id === slotIds[0] && e.day === day);
   let selected = entry ? entry.subject_id : null;
   const options = ttSubjects(slots[0].timetable_id);
+  const subRow = () => {
+    const top = topOf(subjectById(selected));
+    const subs = top ? subsOf(top.id) : [];
+    return !subs.length ? '' : `<span class="sub-pick-title">Subasignatura</span>
+      <button type="button" data-sid="${top.id}" class="${selected === top.id ? 'active' : ''}">Toda la asignatura</button>
+      ${subs.map((c) => `<button type="button" data-sid="${c.id}" class="${selected === c.id ? 'active' : ''}" style="--c:${c.color}">${esc(c.name)}</button>`).join('')}`;
+  };
   if (!options.length) {
     openModal(`<div class="modal-head"><h2>Este horario aún no tiene asignaturas</h2><button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <p>Para rellenar el horario necesitas al menos una asignatura (con su aula, profesor/a y color).</p>
@@ -1434,8 +1475,9 @@ function openSlotModal(slotIds, day) {
       <div class="modal-head"><h2>${DAY_LONG[day]} · ${slot.start_time}–${slot.end_time}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <div class="subject-pick">
         <button type="button" class="none ${selected === null ? 'active' : ''}" data-sid="">— Libre —</button>
-        ${options.map((s) => `<button type="button" data-sid="${s.id}" class="${selected === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
+        ${options.map((s) => `<button type="button" data-sid="${s.id}" class="${topOf(subjectById(selected))?.id === s.id ? 'active' : ''}" style="--c:${s.color}">${esc(s.name)}</button>`).join('')}
       </div>
+      <div class="sub-pick" id="sub-pick">${subRow()}</div>
       ${slots.length > 1 ? `<p class="hint" style="margin:-4px 0 12px">Son ${slots.length} horas seguidas. Los cambios se aplican a todas.</p>` : ''}
       <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" maxlength="60" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
       <div class="error" id="form-error"></div>
@@ -1445,7 +1487,7 @@ function openSlotModal(slotIds, day) {
     const roomInput = form.room;
     const updatePlaceholder = () => {
       const s = subjectById(selected);
-      roomInput.placeholder = s?.room ? `Por defecto: ${s.room}` : 'Por defecto: aula de la asignatura';
+      roomInput.placeholder = effRoom(s) ? `Por defecto: ${effRoom(s)}` : 'Por defecto: aula de la asignatura';
     };
     updatePlaceholder();
     $('.subject-pick', form).onclick = (e) => {
@@ -1453,6 +1495,14 @@ function openSlotModal(slotIds, day) {
       if (!b) return;
       selected = b.dataset.sid ? Number(b.dataset.sid) : null;
       $$('.subject-pick button', form).forEach((x) => x.classList.toggle('active', x === b));
+      $('#sub-pick', form).innerHTML = subRow();
+      updatePlaceholder();
+    };
+    $('#sub-pick', form).onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      selected = Number(b.dataset.sid);
+      $$('#sub-pick button', form).forEach((x) => x.classList.toggle('active', x === b));
       updatePlaceholder();
     };
     $('.subject-pick', form).ondblclick = () => form.requestSubmit();
@@ -1565,7 +1615,9 @@ function openItemModal(item, defaults = {}) {
     const suggestTime = () => {
       if (timeTouched || !form.subject_id.value || !form.date.value) return;
       const day = parseKey(form.date.value);
-      const cls = classesOn(day.getDay(), timetableForDate(day).id).find((c) => c.subject.id === Number(form.subject_id.value));
+      const chosen = subjectById(Number(form.subject_id.value));
+      const classes = classesOn(day.getDay(), timetableForDate(day).id);
+      const cls = classes.find((c) => c.subject.id === chosen.id) || classes.find((c) => topOf(c.subject).id === topOf(chosen).id);
       if (cls) form.time.value = cls.slot.start_time;
     };
     form.time.oninput = () => { timeTouched = true; };
@@ -1576,12 +1628,17 @@ function openItemModal(item, defaults = {}) {
       const tt = timetableForDate(day);
       const list = ttSubjects(tt.id);
       const current = subjectById(selectedId);
-      if (current && !list.includes(current)) list.unshift(current);
+      const top = topOf(current);
+      if (top && !list.includes(top)) list.unshift(top);
+      const subs = top ? subsOf(top.id) : [];
       $('#subj-chips', form).innerHTML = `
         <button type="button" class="schip none ${selectedId == null ? 'active' : ''}" data-sid="" title="Sin asignatura" aria-label="Sin asignatura">—</button>
-        ${list.map((s) => `<button type="button" class="schip ${s.id === selectedId ? 'active' : ''}" data-sid="${s.id}" style="--c:${s.color};--ink:${textOn(s.color)}" title="${esc(s.name)}" aria-label="${esc(s.name)}">${esc(shortName(s))}</button>`).join('')}`;
+        ${list.map((s) => `<button type="button" class="schip ${s.id === top?.id ? 'active' : ''}" data-sid="${s.id}" style="--c:${s.color};--ink:${textOn(s.color)}" title="${esc(s.name)}" aria-label="${esc(s.name)}">${esc(shortName(s))}</button>`).join('')}
+        ${subs.length ? `<div class="sub-chips"><span>Subasignatura</span>
+          <button type="button" class="schip mini ${selectedId === top.id ? 'active' : ''}" data-sid="${top.id}">General</button>
+          ${subs.map((c) => `<button type="button" class="schip mini ${c.id === selectedId ? 'active' : ''}" data-sid="${c.id}" style="--c:${c.color};--ink:${textOn(c.color)}" title="${esc(c.name)}">${esc(c.short_name || c.name)}</button>`).join('')}</div>` : ''}`;
       $('#subj-name', form).textContent = list.length
-        ? current?.name || 'Sin asignatura'
+        ? subjectLabel(current) || 'Sin asignatura'
         : `«${tt.name}» aún no tiene asignaturas. Créalas en la pestaña Asignaturas.`;
     };
     renderChips();
@@ -1589,8 +1646,7 @@ function openItemModal(item, defaults = {}) {
       const b = e.target.closest('.schip');
       if (!b) return;
       form.subject_id.value = b.dataset.sid;
-      $$('.schip', form).forEach((x) => x.classList.toggle('active', x === b));
-      $('#subj-name', form).textContent = subjectById(Number(b.dataset.sid))?.name || 'Sin asignatura';
+      renderChips();
       suggestTime();
     };
     form.date.onchange = () => { renderChips(); suggestTime(); };

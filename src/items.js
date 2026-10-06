@@ -1,8 +1,14 @@
 /** Consultas de tareas/exámenes compartidas entre la API y el planificador. */
 
+// Si la asignatura es una subasignatura, el aula y el profesor vacíos se toman de la principal.
 export const ITEM_SELECT = `
-  SELECT i.*, s.name AS subject_name, s.color AS subject_color, s.room, s.teacher
-  FROM items i LEFT JOIN subjects s ON s.id = i.subject_id`;
+  SELECT i.*, s.name AS subject_name, p.name AS parent_subject_name, s.color AS subject_color,
+         COALESCE(NULLIF(s.room, ''), p.room) AS room, COALESCE(NULLIF(s.teacher, ''), p.teacher) AS teacher
+  FROM items i LEFT JOIN subjects s ON s.id = i.subject_id LEFT JOIN subjects p ON p.id = s.parent_id`;
+
+/** «Física y Química · Química» para subasignaturas; el nombre sin más para el resto. */
+export const subjectLabel = (row) =>
+  row.subject_name ? (row.parent_subject_name ? `${row.parent_subject_name} · ${row.subject_name}` : row.subject_name) : '';
 
 export async function attachChecklists(db, items) {
   if (!items.length) return items;

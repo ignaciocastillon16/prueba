@@ -1,3 +1,5 @@
+import { subjectLabel } from './items.js';
+
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -44,7 +46,7 @@ function itemBlock(item, timeZone) {
     .join('');
   const place = [item.room && `Aula ${esc(item.room)}`, item.teacher && esc(item.teacher)].filter(Boolean).join(' · ');
   return `<div style="border-left:4px solid ${esc(color)};background:${C.bg};border-radius:8px;padding:13px 15px;margin:10px 0">
-  <div style="font-size:12px;font-weight:700;color:${item.type === 'exam' ? C.exam : C.accent}">${typeLabel(item.type)}${item.subject_name ? ` · ${esc(item.subject_name)}` : ''}</div>
+  <div style="font-size:12px;font-weight:700;color:${item.type === 'exam' ? C.exam : C.accent}">${typeLabel(item.type)}${item.subject_name ? ` · ${esc(subjectLabel(item))}` : ''}</div>
   <div style="font-size:16px;font-weight:600;margin:3px 0">${esc(item.title)}</div>
   <div style="font-size:14px;color:${C.ink}">${esc(formatDate(item.due_at, timeZone))}</div>
   ${place ? `<div style="font-size:13px;color:${C.muted};margin-top:2px">${place}</div>` : ''}
@@ -55,7 +57,7 @@ function itemBlock(item, timeZone) {
 
 function itemText(item, timeZone) {
   const lines = [
-    `${typeLabel(item.type)}${item.subject_name ? ` (${item.subject_name})` : ''}: ${item.title}`,
+    `${typeLabel(item.type)}${item.subject_name ? ` (${subjectLabel(item)})` : ''}: ${item.title}`,
     `Fecha: ${formatDate(item.due_at, timeZone)}`,
   ];
   if (item.room) lines.push(`Aula: ${item.room}`);

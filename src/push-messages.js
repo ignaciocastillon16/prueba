@@ -1,4 +1,5 @@
 import { relativeTime } from './emails.js';
+import { subjectLabel } from './items.js';
 
 const typeLabel = (t) => (t === 'exam' ? 'Examen' : 'Tarea');
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -7,7 +8,7 @@ const shortDate = (iso, timeZone) =>
 
 export function reminderPush(item, user, now = new Date()) {
   const when = relativeTime(item.due_at, now);
-  const parts = [`${typeLabel(item.type)}${item.subject_name ? ` de ${item.subject_name}` : ''}, ${when}`, shortDate(item.due_at, user.timezone)];
+  const parts = [`${typeLabel(item.type)}${item.subject_name ? ` de ${subjectLabel(item)}` : ''}, ${when}`, shortDate(item.due_at, user.timezone)];
   if (item.room) parts.push(`aula ${item.room}`);
   const pending = (item.checklist || []).filter((c) => !c.done).length;
   if (pending) parts.push(plural(pending, 'paso pendiente', 'pasos pendientes'));

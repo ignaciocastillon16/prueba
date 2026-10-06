@@ -380,3 +380,50 @@ test('migración: los datos antiguos pasan a «Mi horario»', async () => {
   assert.equal((await old.all("SELECT * FROM subjects WHERE name = 'Compartida'")).length, 2, 'ni las asignaturas');
   await old.close();
 });
+
+test('subasignaturas', async () => {
+  const c = client();
+  await c('POST', '/auth/register', { name: 'Sara', email: 'sara@x.com', password: 'secreto123', timezone: 'Europe/Madrid' });
+  const boot = (await c('GET', '/bootstrap')).body;
+  const tt1 = boot.timetables[0].id;
+  const fyq = (await c('POST', '/subjects', { name: 'Física y Química', short_name: 'FyQ', color: '#7461a6', room: 'B-12', teacher: 'Marta' })).body;
+  const quim = await c('POST', '/subjects', { name: 'Química', short_name: 'QUI', parent_id: fyq.id });
+  assert.equal(quim.status, 201);
+  assert.equal(quim.body.parent_id, fyq.id);
+  assert.equal(quim.body.timetable_id, tt1, 'hereda el horario');
+  assert.equal(quim.body.color, '#7461a6', 'hereda el color si no se indica');
+  const lab = (await c('POST', '/subjects', { name: 'Laboratorio', parent_id: fyq.id, room: 'Lab 1', color: '#3f8c66' })).body;
+  assert.equal((await c('POST', '/subjects', { name: 'Nieta', parent_id: quim.body.id })).status, 400, 'un solo nivel');
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-sub@x.com', password: 'secreto123' });
+  assert.equal((await otro('POST', '/subjects', { name: 'x', parent_id: fyq.id })).status, 404);
+
+  // En el horario y en una tarea
+  const slot = boot.slots[0];
+  assert.equal((await c('PUT', '/schedule', { slot_id: slot.id, day: 2, subject_id: lab.id })).status, 200);
+  const now = new Date('2026-10-05T10:00:00Z');
+  const exam = (await c('POST', '/items', { type: 'exam', title: 'Formulación', subject_id: quim.body.id, due_at: new Date(now.getTime() + 20 * 60000).toISOString(), reminder_minutes: 60 })).body;
+  assert.equal(exam.subject_id, quim.body.id);
+  sent.length = 0;
+  await createScheduler({ db, mailer, appUrl: 'http://test', logger: { log() {}, error() {} } }).tick(now);
+  const mail = sent.find((m) => m.to === 'sara@x.com');
+  assert.match(mail.text, /Física y Química · Química/, 'el aviso muestra asignatura y subasignatura');
+  assert.match(mail.text, /Aula: B-12/, 'aula heredada de la asignatura principal');
+
+  // Copiar el horario copia también las subasignaturas con su nueva asignatura principal
+  const copy = (await c('POST', '/timetables', { name: 'Copia', copy_from: tt1 })).body;
+  const fyq2 = copy.subjects.find((s) => s.timetable_id === copy.id && s.name === 'Física y Química');
+  const subs2 = copy.subjects.filter((s) => s.parent_id === fyq2.id).map((s) => s.name).sort();
+  assert.deepEqual(subs2, ['Laboratorio', 'Química']);
+  const slot2 = copy.slots.find((s) => s.timetable_id === copy.id && s.start_time === slot.start_time);
+  const entry2 = copy.schedule.find((e) => e.slot_id === slot2.id && e.day === 2);
+  assert.equal(copy.subjects.find((s) => s.id === entry2.subject_id).name, 'Laboratorio');
+  assert.notEqual(entry2.subject_id, lab.id, 'apunta a la copia');
+
+  // Borrar la asignatura principal borra sus subasignaturas; la tarea se conserva sin asignatura
+  assert.equal((await c('DELETE', `/subjects/${fyq.id}`)).status, 204);
+  const left = (await c('GET', '/subjects')).body.filter((s) => s.timetable_id === tt1);
+  assert.equal(left.length, 0);
+  assert.equal((await c('GET', '/items')).body.find((i) => i.id === exam.id).subject_id, null);
+  assert.equal((await c('GET', '/schedule')).body.filter((e) => e.slot_id === slot.id).length, 0);
+});

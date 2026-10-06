@@ -233,6 +233,7 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN active_timetable_id INT NULL',
   'ALTER TABLE time_slots ADD COLUMN timetable_id INT NULL',
   'ALTER TABLE subjects ADD COLUMN timetable_id INT NULL',
+  'ALTER TABLE subjects ADD COLUMN parent_id INT NULL',
 ];
 async function migrate(api) {
   for (const sql of MIGRATIONS) {

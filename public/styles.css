@@ -532,3 +532,23 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
   .chip-item { font-size: 15px; }
   .day-num { font-size: 17px; min-width: 32px; height: 32px; }
 }
+
+/* Subasignaturas */
+.subject-card .subs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.sub-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  border-radius: 999px; padding: 4px 10px 4px 8px; font-size: 13px; font-weight: 500; cursor: pointer; max-width: 100%; }
+.sub-chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); flex: none; }
+.sub-chip small { color: var(--muted); font-size: 11.5px; }
+.sub-chip:hover { border-color: var(--border-strong); }
+.sub-chip.add { background: transparent; border-style: dashed; color: var(--accent); }
+.sub-chip.add .i { width: 14px; height: 14px; }
+.sub-pick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -4px 0 14px; }
+.sub-pick:empty { display: none; }
+.sub-pick-title, .sub-chips > span { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-right: 2px; flex-basis: 100%; }
+.sub-pick button { border: 2px solid transparent; border-radius: 999px; padding: 6px 12px; cursor: pointer; font-weight: 600; font-size: 13px;
+  background: color-mix(in srgb, var(--c, var(--muted)) 14%, var(--surface)); color: color-mix(in srgb, var(--c, var(--muted)) 60%, var(--text)); }
+.sub-pick button.active { border-color: var(--c, var(--text)); }
+.sub-chips { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.schip.mini { min-width: 0; padding: 6px 10px; font-size: 12.5px; }
+.schip.mini:not([style]) { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.schip.mini:not([style]).active { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--text); }
