@@ -128,7 +128,7 @@ const TABLE_OPTS = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
 const MYSQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(80) NOT NULL,
+    name TEXT NOT NULL,
     email VARCHAR(191) NOT NULL,
     password_hash VARCHAR(100) NOT NULL,
     timezone VARCHAR(64) NOT NULL DEFAULT 'Europe/Madrid',
@@ -154,7 +154,7 @@ const MYSQL_SCHEMA = [
     user_id INT NOT NULL,
     start_time CHAR(5) NOT NULL,
     end_time CHAR(5) NOT NULL,
-    label VARCHAR(40) NOT NULL DEFAULT '',
+    label TEXT NOT NULL,
     is_break TINYINT NOT NULL DEFAULT 0,
     KEY idx_slots_user (user_id),
     CONSTRAINT fk_slots_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -162,11 +162,11 @@ const MYSQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS subjects (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    name VARCHAR(60) NOT NULL,
-    short_name VARCHAR(6) NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    short_name TEXT NOT NULL,
     color CHAR(7) NOT NULL DEFAULT '#4f46e5',
-    room VARCHAR(60) NOT NULL DEFAULT '',
-    teacher VARCHAR(80) NOT NULL DEFAULT '',
+    room TEXT NOT NULL,
+    teacher TEXT NOT NULL,
     KEY idx_subjects_user (user_id),
     CONSTRAINT fk_subjects_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ${TABLE_OPTS}`,
@@ -176,7 +176,7 @@ const MYSQL_SCHEMA = [
     subject_id INT NOT NULL,
     slot_id INT NOT NULL,
     day TINYINT NOT NULL,
-    room_override VARCHAR(60) NOT NULL DEFAULT '',
+    room_override TEXT NOT NULL,
     UNIQUE KEY uq_schedule (user_id, slot_id, day),
     CONSTRAINT fk_sched_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_sched_subject FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
@@ -186,8 +186,8 @@ const MYSQL_SCHEMA = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     type VARCHAR(4) NOT NULL,
-    title VARCHAR(150) NOT NULL,
-    description TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description MEDIUMTEXT NOT NULL,
     subject_id INT NULL,
     due_at VARCHAR(30) NOT NULL,
     reminder_minutes INT NULL,
@@ -203,7 +203,7 @@ const MYSQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS checklist_items (
     id INT AUTO_INCREMENT PRIMARY KEY,
     item_id INT NOT NULL,
-    text VARCHAR(200) NOT NULL,
+    text TEXT NOT NULL,
     done TINYINT NOT NULL DEFAULT 0,
     position INT NOT NULL DEFAULT 0,
     KEY idx_checklist_item (item_id),
@@ -229,7 +229,7 @@ const MYSQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS timetables (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    name VARCHAR(80) NOT NULL,
+    name TEXT NOT NULL,
     start_date VARCHAR(10) NULL,
     end_date VARCHAR(10) NULL,
     background VARCHAR(20) NOT NULL DEFAULT 'rayas',
@@ -240,9 +240,9 @@ const MYSQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS events (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    title VARCHAR(150) NOT NULL,
-    description TEXT NOT NULL,
-    location VARCHAR(120) NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    description MEDIUMTEXT NOT NULL,
+    location TEXT NOT NULL,
     color CHAR(7) NOT NULL DEFAULT '#7461a6',
     start_at VARCHAR(30) NOT NULL,
     end_at VARCHAR(30) NULL,
@@ -267,7 +267,40 @@ const MIGRATIONS = [
   'ALTER TABLE subjects ADD COLUMN timetable_id INT NULL',
   'ALTER TABLE subjects ADD COLUMN parent_id INT NULL',
   'ALTER TABLE timetables ADD COLUMN visible_days VARCHAR(40) NULL',
+  'ALTER TABLE items ADD COLUMN timetable_id INT NULL',
 ];
+
+/*
+ * Sin límite práctico de caracteres: en MySQL los textos pasan de VARCHAR a TEXT (y las notas a
+ * MEDIUMTEXT). Solo se cambia lo que aún es VARCHAR, así no se repite en cada arranque.
+ */
+const MYSQL_LONG_TEXT = [
+  ['users', 'name', 'TEXT NOT NULL'],
+  ['subjects', 'name', 'TEXT NOT NULL'],
+  ['subjects', 'short_name', 'TEXT NOT NULL'],
+  ['subjects', 'room', 'TEXT NOT NULL'],
+  ['subjects', 'teacher', 'TEXT NOT NULL'],
+  ['time_slots', 'label', 'TEXT NOT NULL'],
+  ['schedule_entries', 'room_override', 'TEXT NOT NULL'],
+  ['timetables', 'name', 'TEXT NOT NULL'],
+  ['items', 'title', 'TEXT NOT NULL'],
+  ['items', 'description', 'MEDIUMTEXT NOT NULL'],
+  ['checklist_items', 'text', 'TEXT NOT NULL'],
+  ['events', 'title', 'TEXT NOT NULL'],
+  ['events', 'location', 'TEXT NOT NULL'],
+  ['events', 'description', 'MEDIUMTEXT NOT NULL'],
+];
+async function widenMysqlText(api) {
+  if (api.dialect !== 'mysql') return;
+  for (const [table, column, type] of MYSQL_LONG_TEXT) {
+    const col = await api.get(
+      'SELECT DATA_TYPE AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+      table, column
+    );
+    const wanted = type.split(' ')[0].toLowerCase();
+    if (col && String(col.t).toLowerCase() !== wanted) await api.run(`ALTER TABLE ${table} MODIFY ${column} ${type}`);
+  }
+}
 async function migrate(api) {
   for (const sql of MIGRATIONS) {
     try {
@@ -295,6 +328,10 @@ async function migrate(api) {
     "UPDATE timetables SET visible_days = COALESCE((SELECT u.visible_days FROM users u WHERE u.id = timetables.user_id), '[1,2,3,4,5]') WHERE visible_days IS NULL"
   );
   await migrateSubjectsToTimetables(api);
+  // Tareas por horario: las existentes van al horario de su asignatura o, si no tienen, al abierto.
+  await api.run('UPDATE items SET timetable_id = (SELECT s.timetable_id FROM subjects s WHERE s.id = items.subject_id) WHERE timetable_id IS NULL AND subject_id IS NOT NULL');
+  await api.run('UPDATE items SET timetable_id = (SELECT u.active_timetable_id FROM users u WHERE u.id = items.user_id) WHERE timetable_id IS NULL');
+  await widenMysqlText(api);
 }
 
 /*

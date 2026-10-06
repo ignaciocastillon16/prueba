@@ -486,3 +486,57 @@ test('eventos', async () => {
   assert.match(digest.text, /EVENTOS[\s\S]*Conferencia de marketing digital/);
   assert.equal((await c('DELETE', `/events/${congreso.id}`)).status, 204);
 });
+
+test('cada tarea pertenece a un horario', async () => {
+  const c = client();
+  await c('POST', '/auth/register', { name: 'Tomás', email: 'tomas-tt@x.com', password: 'secreto123' });
+  const tt1 = (await c('GET', '/bootstrap')).body.timetables[0].id;
+  const s1 = (await c('POST', '/subjects', { name: 'Lengua', color: '#aa3366' })).body;
+  const tt2 = (await c('POST', '/timetables', { name: 'Segundo' })).body.id; // queda abierto
+  const s2 = (await c('POST', '/subjects', { name: 'Física', color: '#335577' })).body;
+  assert.equal(s2.timetable_id, tt2);
+  const withS1 = (await c('POST', '/items', { type: 'exam', title: 'Examen de Lengua', due_at: '2027-03-01T10:00:00Z', subject_id: s1.id })).body;
+  assert.equal(withS1.timetable_id, tt1, 'el de su asignatura');
+  const loose = (await c('POST', '/items', { type: 'task', title: 'Sin asignatura', due_at: '2027-03-01T10:00:00Z' })).body;
+  assert.equal(loose.timetable_id, tt2, 'el horario abierto');
+  const explicit = (await c('POST', '/items', { type: 'task', title: 'Del primero', due_at: '2027-03-01T10:00:00Z', timetable_id: tt1 })).body;
+  assert.equal(explicit.timetable_id, tt1);
+  // Cambiar la asignatura mueve la tarea a su horario
+  assert.equal((await c('PUT', `/items/${loose.id}`, { subject_id: s1.id })).body.timetable_id, tt1);
+  assert.equal((await c('PUT', `/items/${loose.id}`, { subject_id: s2.id })).body.timetable_id, tt2);
+  // Otro usuario no puede usar mis horarios
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-it@x.com', password: 'secreto123' });
+  assert.equal((await otro('POST', '/items', { type: 'task', title: 'x', due_at: '2027-03-01T10:00:00Z', timetable_id: tt1 })).status, 404);
+  // Al borrar un horario sus tareas pasan al que queda abierto
+  await c('PUT', '/me/settings', { active_timetable_id: tt1 });
+  await c('DELETE', `/timetables/${tt2}`);
+  const moved = (await c('GET', '/items')).body.find((i) => i.id === loose.id);
+  assert.equal(moved.timetable_id, tt1);
+  assert.equal(moved.subject_id, null);
+});
+
+test('sin límite práctico de caracteres', async () => {
+  const c = client();
+  const longName = 'N'.repeat(3000);
+  await c('POST', '/auth/register', { name: longName, email: 'largo@x.com', password: 'secreto123' });
+  assert.equal((await c('GET', '/me')).body.user.name, longName);
+  const big = 'Asignatura con un nombre larguísimo '.repeat(150).trim();
+  const subj = await c('POST', '/subjects', { name: big, short_name: 'S'.repeat(500), room: 'A'.repeat(2000), teacher: 'P'.repeat(2000), color: '#123456' });
+  assert.equal(subj.status, 201);
+  assert.equal(subj.body.name, big);
+  assert.equal(subj.body.short_name.length, 500);
+  const title = 'Título '.repeat(800).trim();
+  const description = 'Descripción con mucho texto. '.repeat(1200).trim();
+  const item = await c('POST', '/items', { type: 'task', title, description, due_at: '2027-03-01T10:00:00Z', subject_id: subj.body.id, checklist: [{ text: 'paso '.repeat(1000) }] });
+  assert.equal(item.status, 201);
+  assert.equal(item.body.title, title);
+  assert.equal(item.body.description, description);
+  assert.equal(item.body.checklist[0].text, 'paso '.repeat(1000).trim());
+  const ev = await c('POST', '/events', { title, description, location: 'L'.repeat(4000), start_at: '2027-03-02T09:00:00Z' });
+  assert.equal(ev.status, 201);
+  assert.equal(ev.body.description, description);
+  const tt = await c('POST', '/timetables', { name: 'H'.repeat(3000) });
+  assert.equal(tt.status, 201);
+  assert.ok(tt.body.timetables.some((t) => t.name.length === 3000));
+});

@@ -177,16 +177,8 @@ const itemById = (id) => state.items.find((i) => i.id === id);
 /** Días que muestra un horario (cada horario tiene los suyos). */
 const ttDays = (tt) => tt?.visible_days || state.user.visible_days || [1, 2, 3, 4, 5];
 const visibleDays = (tt = activeTT()) => DAY_ORDER.filter((d) => ttDays(tt).includes(d));
-/** Columnas del mes: los días del horario abierto y de los que tienen fechas dentro de ese mes. */
-function monthDays(y, m) {
-  const first = `${y}-${pad(m + 1)}-01`;
-  const last = `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`;
-  const set = new Set(ttDays(activeTT()));
-  for (const t of state.timetables) {
-    if ((t.start_date || t.end_date) && (!t.start_date || t.start_date <= last) && (!t.end_date || t.end_date >= first)) ttDays(t).forEach((d) => set.add(d));
-  }
-  return DAY_ORDER.filter((d) => set.has(d));
-}
+/** El mes muestra siempre la semana completa; los días de cada horario solo afectan a sus clases. */
+const monthDays = () => DAY_ORDER;
 /* Varios horarios: cada uno tiene sus tramos y clases. */
 const activeTT = () => state.timetables.find((t) => t.id === state.user.active_timetable_id) || state.timetables[0];
 const ttSlots = (ttId) => state.slots.filter((s) => s.timetable_id === ttId);
@@ -285,7 +277,7 @@ function renderAuth(mode) {
       ${brand()}
       <h2>${isLogin ? 'Hola de nuevo' : 'Crea tu cuenta'}</h2>
       <p class="sub">${isLogin ? 'Entra para ver tu semana.' : 'Solo necesitas un correo y una contraseña.'}</p>
-      ${isLogin ? '' : '<label class="field"><span>Nombre</span><input type="text" name="name" autocomplete="name" required maxlength="80"></label>'}
+      ${isLogin ? '' : '<label class="field"><span>Nombre</span><input type="text" name="name" autocomplete="name" required></label>'}
       <label class="field"><span>Correo electrónico</span><input type="email" name="email" autocomplete="email" required></label>
       <label class="field"><span>Contraseña</span><input type="password" name="password" autocomplete="${isLogin ? 'current-password' : 'new-password'}" required minlength="8">
         ${isLogin ? '' : '<small class="hint">Mínimo 8 caracteres.</small>'}</label>
@@ -440,7 +432,8 @@ const ACTIONS = {
   prev: () => goMonth(-1),
   next: () => goMonth(1),
   today: () => { state.cursor = startOfMonth(new Date()); state.selectedDay = dateKey(new Date()); renderView(); },
-  newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, returnTo }),
+  // Desde el calendario, la tarea va al horario de ese día; desde Tareas, al abierto.
+  newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, timetable_id: d.date ? timetableForDate(d.date).id : undefined, returnTo }),
   newSubject: () => openSubjectModal(null),
   newEvent: (d, returnTo) => openEventModal(null, { date: d.date, returnTo }),
   newSub: (d) => openSubjectModal(null, subjectById(Number(d.parent))),
@@ -490,7 +483,7 @@ function groupClasses(classes) {
 function monthView() {
   const y = state.cursor.getFullYear();
   const m = state.cursor.getMonth();
-  const days = monthDays(y, m);
+  const days = monthDays();
   const first = new Date(y, m, 1);
   const last = new Date(y, m + 1, 0);
   const weeks = [];
@@ -751,7 +744,7 @@ function openTimetableModal(tt) {
   openModal(`
     <form id="tt-form" novalidate>
       <div class="modal-head"><h2>${isNew ? 'Nuevo horario' : 'Editar horario'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
-      <label class="field"><span>Nombre</span><input type="text" name="name" maxlength="80" required value="${esc(tt?.name || '')}" placeholder="Ej.: 3º Publicidad y RRPP (2º cuatrimestre)"></label>
+      <label class="field"><span>Nombre</span><input type="text" name="name" required value="${esc(tt?.name || '')}" placeholder="Ej.: 3º Publicidad y RRPP (2º cuatrimestre)"></label>
       <div class="row">
         <label class="field"><span>Desde (opcional)</span><input type="date" name="start_date" value="${tt?.start_date || ''}"></label>
         <label class="field"><span>Hasta (opcional)</span><input type="date" name="end_date" value="${tt?.end_date || ''}"></label>
@@ -1153,7 +1146,7 @@ function openEventModal(ev, defaults = {}) {
   openModal(`
     <form id="event-form" novalidate>
       <div class="modal-head"><h2>${isNew ? 'Nuevo evento' : 'Editar evento'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
-      <label class="field"><span>Título</span><input type="text" name="title" maxlength="150" value="${esc(d.title)}" placeholder="Ej.: Conferencia de marketing digital" required></label>
+      <label class="field"><span>Título</span><input type="text" name="title" value="${esc(d.title)}" placeholder="Ej.: Conferencia de marketing digital" required></label>
       <div class="row">
         <label class="field"><span>Fecha</span><input type="date" name="date" value="${d.date}" required></label>
         <label class="field time-field"><span>Hora de inicio</span><input type="time" name="time" value="${d.time}"></label>
@@ -1163,14 +1156,14 @@ function openEventModal(ev, defaults = {}) {
         <label class="field"><span>Termina el día (opcional)</span><input type="date" name="end_date" value="${d.endDate}"></label>
         <label class="field time-field"><span>Hora de fin (opcional)</span><input type="time" name="end_time" value="${d.endTime}"></label>
       </div>
-      <label class="field"><span>Lugar</span><input type="text" name="location" maxlength="120" value="${esc(d.location)}" placeholder="Ej.: Auditorio de la facultad"></label>
+      <label class="field"><span>Lugar</span><input type="text" name="location" value="${esc(d.location)}" placeholder="Ej.: Auditorio de la facultad"></label>
       <div class="field"><span>Color</span>
         <div class="swatches" id="ev-colors">${EVENT_COLORS.map((c) => `<button type="button" class="swatch ${c === d.color ? 'active' : ''}" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`).join('')}</div>
         <input type="hidden" name="color" value="${d.color}">
       </div>
       <label class="field"><span>Aviso</span>
         <select name="reminder">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === d.reminder ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="field"><span>Notas</span><textarea name="description" maxlength="5000" placeholder="Ponentes, qué llevar, enlace de inscripción…">${esc(d.description)}</textarea></label>
+      <label class="field"><span>Notas</span><textarea name="description" placeholder="Ponentes, qué llevar, enlace de inscripción…">${esc(d.description)}</textarea></label>
       <div class="error" id="form-error"></div>
       <div class="modal-foot">
         ${isNew ? '' : `<button type="button" class="btn btn-danger left" id="ev-delete">${icon('trash')}Eliminar</button>`}
@@ -1267,9 +1260,16 @@ function itemCard(item) {
   </article>`;
 }
 
+/** Cada horario tiene sus propias tareas y exámenes. */
+const ttItems = (ttId = activeTT().id) => state.items.filter((i) => i.timetable_id === ttId);
+
 function itemsView() {
   const f = state.filter;
-  const list = state.items.filter((i) => (f.type === 'all' || i.type === f.type) && (!f.subject || i.subject_id === Number(f.subject) || subjectById(i.subject_id)?.parent_id === Number(f.subject)));
+  const tt = activeTT();
+  const subjects = ttSubjects(tt.id);
+  const ids = new Set(subjects.flatMap((s) => [s.id, ...subsOf(s.id).map((c) => c.id)]));
+  if (f.subject && !ids.has(Number(f.subject))) f.subject = '';
+  const list = ttItems(tt.id).filter((i) => (f.type === 'all' || i.type === f.type) && (!f.subject || i.subject_id === Number(f.subject) || subjectById(i.subject_id)?.parent_id === Number(f.subject)));
   const now = new Date();
   const todayKey = dateKey(now);
   const in7 = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 8);
@@ -1285,25 +1285,25 @@ function itemsView() {
     .filter(([, items]) => items.length)
     .map(([title, items, cls]) => `<div class="group-title ${cls || ''}">${title} <span>(${items.length})</span></div>${items.map(itemCard).join('')}`)
     .join('');
+  const opt = (s, indent) => `<option value="${s.id}" ${String(s.id) === f.subject ? 'selected' : ''}>${indent ? '\u00a0\u00a0\u00a0↳ ' : ''}${esc(s.name)}</option>`;
   return `
-    <div class="toolbar items-toolbar">
-      <div class="segmented" id="type-filter">
-        ${[['all', 'Todo'], ['task', 'Tareas'], ['exam', 'Exámenes']].map(([v, l]) => `<button data-type="${v}" class="${f.type === v ? 'active' : ''}">${l}</button>`).join('')}
-      </div>
-      <select id="subject-filter" style="width:auto">
-        <option value="">Todas las asignaturas</option>
-        ${state.timetables.map((t) => {
-          const opt = (s, indent) => `<option value="${s.id}" ${String(s.id) === f.subject ? 'selected' : ''}>${indent ? '\u00a0\u00a0\u00a0↳ ' : ''}${esc(s.name)}</option>`;
-          const opts = ttSubjects(t.id).map((s) => opt(s, false) + subsOf(s.id).map((c) => opt(c, true)).join('')).join('');
-          return !opts ? '' : state.timetables.length > 1 ? `<optgroup label="${esc(t.name)}">${opts}</optgroup>` : opts;
-        }).join('')}
-      </select>
-      <label class="toggle"><input type="checkbox" id="show-done" ${f.showDone ? 'checked' : ''}> <span class="long">Mostrar completadas</span><span class="short">Hechas</span></label>
+    <div class="toolbar tt-toolbar">
+      ${ttSwitcher()}
       <span class="spacer"></span>
       <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">${icon('plus')}Tarea</button>
       <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">${icon('plus')}Examen</button>
     </div>
-    <div class="scroll">${body || (f.type !== 'all' || f.subject ? '<div class="empty"><strong>Nada por aquí</strong>No hay nada pendiente con estos filtros.</div>' : '<div class="empty"><strong>Todo al día</strong>No tienes tareas ni exámenes pendientes.</div>')}</div>
+    <div class="toolbar items-toolbar">
+      <div class="segmented" id="type-filter">
+        ${[['all', 'Todo'], ['task', 'Tareas'], ['exam', 'Exámenes']].map(([v, l]) => `<button data-type="${v}" class="${f.type === v ? 'active' : ''}">${l}</button>`).join('')}
+      </div>
+      <select id="subject-filter" aria-label="Asignatura">
+        <option value="">Todas las asignaturas</option>
+        ${subjects.map((s) => opt(s, false) + subsOf(s.id).map((c) => opt(c, true)).join('')).join('')}
+      </select>
+      <label class="toggle"><input type="checkbox" id="show-done" ${f.showDone ? 'checked' : ''}> <span class="long">Mostrar completadas</span><span class="short">Hechas</span></label>
+    </div>
+    <div class="scroll">${body || (f.type !== 'all' || f.subject ? '<div class="empty"><strong>Nada por aquí</strong>No hay nada pendiente con estos filtros.</div>' : '<div class="empty"><strong>Todo al día</strong>No tienes tareas ni exámenes pendientes en este horario.</div>')}</div>
     <button class="fab show-mobile" data-action="newItem" data-type="task" aria-label="Añadir tarea o examen">${icon('plus')}</button>`;
 }
 document.addEventListener('change', (e) => {
@@ -1382,12 +1382,12 @@ function openSubjectModal(subject, parent = null) {
     <form id="subject-form">
       <div class="modal-head"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
       <div class="row">
-        <label class="field" style="flex:3"><span>Nombre</span><input type="text" name="name" value="${esc(s.name)}" required maxlength="60" placeholder="${parent ? 'Química' : 'Matemáticas'}"></label>
-        <label class="field" style="flex:1"><span>Abreviatura</span><input type="text" name="short_name" value="${esc(s.short_name)}" maxlength="6" placeholder="MAT"></label>
+        <label class="field" style="flex:3"><span>Nombre</span><input type="text" name="name" value="${esc(s.name)}" required placeholder="${parent ? 'Química' : 'Matemáticas'}"></label>
+        <label class="field" style="flex:1"><span>Abreviatura</span><input type="text" name="short_name" value="${esc(s.short_name)}" placeholder="MAT"></label>
       </div>
       <div class="row">
-        <label class="field"><span>Aula</span><input type="text" name="room" value="${esc(s.room)}" maxlength="60" placeholder="${esc(inherit(parent?.room, 'B-12'))}"></label>
-        <label class="field"><span>Profesor/a</span><input type="text" name="teacher" value="${esc(s.teacher)}" maxlength="80" placeholder="${esc(inherit(parent?.teacher, 'Ana García'))}"></label>
+        <label class="field"><span>Aula</span><input type="text" name="room" value="${esc(s.room)}" placeholder="${esc(inherit(parent?.room, 'B-12'))}"></label>
+        <label class="field"><span>Profesor/a</span><input type="text" name="teacher" value="${esc(s.teacher)}" placeholder="${esc(inherit(parent?.teacher, 'Ana García'))}"></label>
       </div>
       ${parent ? `<p class="hint" style="margin:-6px 0 14px">Si dejas el aula o el profesor vacíos, se usan los de «${esc(parent.name)}».</p>` : ''}
       <div class="field"><span>Color</span>
@@ -1456,7 +1456,7 @@ function settingsView() {
         <div class="slot-row" data-slot="${s.id}">
           <input type="time" name="start_time" value="${s.start_time}" aria-label="Inicio">
           <input type="time" name="end_time" value="${s.end_time}" aria-label="Fin">
-          <input type="text" name="label" value="${esc(s.label)}" placeholder="Etiqueta (opcional)" maxlength="40">
+          <input type="text" name="label" value="${esc(s.label)}" placeholder="Etiqueta (opcional)">
           <label class="brk"><input type="checkbox" name="is_break" ${s.is_break ? 'checked' : ''}> Descanso</label>
           <button class="icon-btn" data-del-slot="${s.id}" title="Eliminar tramo" aria-label="Eliminar tramo">${icon('trash')}</button>
         </div>`).join('') || '<p class="hint">No hay tramos.</p>'}</div>
@@ -1494,7 +1494,7 @@ function settingsView() {
 
     <section class="card">
       <h2>Cuenta</h2>
-      <label class="field"><span>Nombre</span><input type="text" id="s-name" value="${esc(u.name)}" maxlength="80"></label>
+      <label class="field"><span>Nombre</span><input type="text" id="s-name" value="${esc(u.name)}"></label>
       <form id="pw-form">
         <div class="row">
           <label class="field"><span>Contraseña actual</span><input type="password" name="current" autocomplete="current-password" required></label>
@@ -1723,7 +1723,7 @@ function openSlotModal(slotIds, day) {
       </div>
       <div class="sub-pick" id="sub-pick">${subRow()}</div>
       ${slots.length > 1 ? `<p class="hint" style="margin:-4px 0 12px">Son ${slots.length} horas seguidas. Los cambios se aplican a todas.</p>` : ''}
-      <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" maxlength="60" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
+      <label class="field"><span>Aula para esta clase (opcional)</span><input type="text" name="room" value="${esc(entry?.room_override || '')}" placeholder="Por defecto: aula de la asignatura"></label>
       <div class="error" id="form-error"></div>
       <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn btn-primary">Guardar</button></div>
     </form>`, (root) => {
@@ -1781,17 +1781,19 @@ function openItemModal(item, defaults = {}) {
     checklist: (item?.checklist || []).map((c) => ({ text: c.text, done: c.done })),
   };
   let timeTouched = !isNew;
+  // Pertenece a un horario: el suyo si ya existe; si es nueva, el que está abierto.
+  const tt = state.timetables.find((t) => t.id === (item?.timetable_id ?? defaults.timetable_id)) || activeTT();
 
   openModal(`
     <form id="item-form" novalidate>
       <div class="modal-head">
-        <h2 id="item-heading"></h2>
+        <div class="head-text"><h2 id="item-heading"></h2>${state.timetables.length > 1 ? `<small class="hint">${esc(tt.name)}</small>` : ''}</div>
         <button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>
       </div>
       <div class="field"><div class="segmented" id="type-seg">
         <button type="button" data-type="task">${icon('check')}Tarea</button><button type="button" data-type="exam" class="exam">${icon('exam')}Examen</button>
       </div></div>
-      <label class="field"><span>Título</span><input type="text" name="title" maxlength="150" value="${esc(data.title)}" placeholder="Ej.: Ejercicios del tema 3" required></label>
+      <label class="field"><span>Título</span><input type="text" name="title" value="${esc(data.title)}" placeholder="Ej.: Ejercicios del tema 3" required></label>
       <div class="field"><span>Asignatura</span>
         <input type="hidden" name="subject_id" value="${data.subject_id ?? ''}">
         <div class="subject-chips" id="subj-chips"></div>
@@ -1805,10 +1807,10 @@ function openItemModal(item, defaults = {}) {
         <select name="reminder">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === data.reminder_minutes ? 'selected' : ''}>${l}</option>`).join('')}</select>
         ${state.user.email_notifications || state.pushDevices ? '' : '<small class="hint">No tienes activado ningún aviso. Actívalos en Ajustes, por correo o con notificaciones.</small>'}
       </label>
-      <label class="field"><span>Descripción / notas</span><textarea name="description" maxlength="5000" placeholder="Temas que entran, páginas, materiales…">${esc(data.description)}</textarea></label>
+      <label class="field"><span>Descripción / notas</span><textarea name="description" placeholder="Temas que entran, páginas, materiales…">${esc(data.description)}</textarea></label>
       <div class="field"><span>Checklist</span>
         <div class="cl-editor" id="cl-list"></div>
-        <div class="cl-row"><input type="text" id="cl-new" maxlength="200" placeholder="Añadir paso y pulsar Enter"><button type="button" class="btn btn-sm" id="cl-add">Añadir</button></div>
+        <div class="cl-row"><input type="text" id="cl-new" placeholder="Añadir paso y pulsar Enter"><button type="button" class="btn btn-sm" id="cl-add">Añadir</button></div>
       </div>
       <label class="check-line"><input type="checkbox" name="done" ${data.done ? 'checked' : ''}> Marcar como realizada</label>
       <div class="error" id="form-error"></div>
@@ -1830,7 +1832,7 @@ function openItemModal(item, defaults = {}) {
     const renderChecklist = () => {
       $('#cl-list', form).innerHTML = data.checklist.map((c, i) => `
         <div class="cl-row"><input type="checkbox" data-i="${i}" ${c.done ? 'checked' : ''}>
-          <input type="text" data-i="${i}" value="${esc(c.text)}" maxlength="200">
+          <input type="text" data-i="${i}" value="${esc(c.text)}">
           <button type="button" class="icon-btn" data-rm="${i}" title="Quitar" aria-label="Quitar">${icon('x')}</button></div>`).join('');
     };
     renderChecklist();
@@ -1860,16 +1862,14 @@ function openItemModal(item, defaults = {}) {
       if (timeTouched || !form.subject_id.value || !form.date.value) return;
       const day = parseKey(form.date.value);
       const chosen = subjectById(Number(form.subject_id.value));
-      const classes = classesOn(day.getDay(), timetableForDate(day).id);
+      const classes = classesOn(day.getDay(), tt.id);
       const cls = classes.find((c) => c.subject.id === chosen.id) || classes.find((c) => topOf(c.subject).id === topOf(chosen).id);
       if (cls) form.time.value = cls.slot.start_time;
     };
     form.time.oninput = () => { timeTouched = true; };
-    // Las siglas que se ofrecen son las del horario de la fecha elegida.
+    // Solo se ofrecen las asignaturas de su horario.
     const renderChips = () => {
       const selectedId = form.subject_id.value ? Number(form.subject_id.value) : null;
-      const day = form.date.value ? parseKey(form.date.value) : new Date();
-      const tt = timetableForDate(day);
       const list = ttSubjects(tt.id);
       const current = subjectById(selectedId);
       const top = topOf(current);
@@ -1893,7 +1893,7 @@ function openItemModal(item, defaults = {}) {
       renderChips();
       suggestTime();
     };
-    form.date.onchange = () => { renderChips(); suggestTime(); };
+    form.date.onchange = suggestTime;
     // En el móvil no se abre el teclado solo: desplazaba la ventana y ocultaba su parte de arriba.
     if (!item && !window.matchMedia('(pointer: coarse)').matches) setTimeout(() => form.title.focus(), 0);
 
@@ -1921,6 +1921,7 @@ function openItemModal(item, defaults = {}) {
         title: form.title.value,
         description: form.description.value,
         subject_id: form.subject_id.value ? Number(form.subject_id.value) : null,
+        timetable_id: tt.id,
         due_at: new Date(`${form.date.value}T${form.time.value}`).toISOString(),
         reminder_minutes: form.reminder.value === '' ? null : Number(form.reminder.value),
         done: form.done.checked,

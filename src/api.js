@@ -119,7 +119,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     }
     next();
   });
-  r.use(express.json({ limit: '200kb' }));
+  r.use(express.json({ limit: '5mb' }));
 
   // Comprobación de estado para Render (y para mantener despierto el plan gratuito).
   r.get('/health', async (req, res) => {
@@ -149,7 +149,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   /* ---------- autenticación ---------- */
   r.post('/auth/register', async (req, res) => {
     if (!allowRegister(req.ip)) throw new HttpError(429, 'Demasiados registros. Inténtalo más tarde.');
-    const name = str(req.body.name, 'El nombre', { max: 80, required: true });
+    const name = str(req.body.name, 'El nombre', { max: 20000, required: true });
     const email = str(req.body.email, 'El correo', { max: 191, required: true }).toLowerCase();
     if (!EMAIL_RE.test(email)) throw bad('El correo no es válido');
     const password = typeof req.body.password === 'string' ? req.body.password : '';
@@ -222,7 +222,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const u = req.user;
     const b = req.body;
     const next = {
-      name: b.name !== undefined ? str(b.name, 'El nombre', { max: 80, required: true }) : u.name,
+      name: b.name !== undefined ? str(b.name, 'El nombre', { max: 20000, required: true }) : u.name,
       timezone: b.timezone !== undefined ? timezone(b.timezone) : u.timezone,
       visible_days: u.visible_days,
       email_notifications: b.email_notifications !== undefined ? (b.email_notifications ? 1 : 0) : u.email_notifications,
@@ -314,11 +314,11 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   /* ---------- asignaturas ---------- */
   function subjectInput(b) {
     return {
-      name: str(b.name, 'El nombre de la asignatura', { max: 60, required: true }),
-      short_name: str(b.short_name, 'La abreviatura', { max: 6 }),
+      name: str(b.name, 'El nombre de la asignatura', { max: 20000, required: true }),
+      short_name: str(b.short_name, 'La abreviatura', { max: 20000 }),
       color: color(b.color ?? '#4f46e5'),
-      room: str(b.room, 'El aula', { max: 60 }),
-      teacher: str(b.teacher, 'El profesor', { max: 80 }),
+      room: str(b.room, 'El aula', { max: 20000 }),
+      teacher: str(b.teacher, 'El profesor', { max: 20000 }),
     };
   }
   const SUBJECT_COLS = 'id, timetable_id, parent_id, name, short_name, color, room, teacher';
@@ -373,7 +373,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const s = {
       start_time: time(b.start_time, 'La hora de inicio'),
       end_time: time(b.end_time, 'La hora de fin'),
-      label: str(b.label, 'La etiqueta', { max: 40 }),
+      label: str(b.label, 'La etiqueta', { max: 20000 }),
       is_break: b.is_break ? 1 : 0,
     };
     if (s.start_time >= s.end_time) throw bad('La hora de fin debe ser posterior a la de inicio');
@@ -423,7 +423,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   }
   function timetableInput(b) {
     const t = {
-      name: str(b.name, 'El nombre del horario', { max: 80, required: true }),
+      name: str(b.name, 'El nombre del horario', { max: 20000, required: true }),
       start_date: optDate(b.start_date, 'La fecha de inicio'),
       end_date: optDate(b.end_date, 'La fecha de fin'),
       background: b.background ?? 'rayas',
@@ -509,9 +509,10 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       // Sus asignaturas también se borran; las tareas y exámenes se conservan sin asignatura.
       await tx.run('DELETE FROM subjects WHERE timetable_id = ? AND user_id = ?', existing.id, uid(req));
       await tx.run('DELETE FROM timetables WHERE id = ?', existing.id);
-      if (req.user.active_timetable_id === existing.id) {
-        await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', all.find((x) => x.id !== existing.id).id, uid(req));
-      }
+      const nextActive = req.user.active_timetable_id === existing.id ? all.find((x) => x.id !== existing.id).id : req.user.active_timetable_id;
+      if (nextActive !== req.user.active_timetable_id) await tx.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', nextActive, uid(req));
+      // Sus tareas y exámenes no se pierden: pasan al horario que queda abierto.
+      await tx.run('UPDATE items SET timetable_id = ? WHERE timetable_id = ? AND user_id = ?', nextActive, existing.id, uid(req));
     });
     res.json(await timetablesPayload(uid(req)));
   });
@@ -531,7 +532,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       const subject = await getSubject(uid(req), subjectId);
       if (!subject) throw notFound('Asignatura');
       if (subject.timetable_id !== slot.timetable_id) throw bad('Esa asignatura es de otro horario');
-      const room = str(req.body.room_override, 'El aula', { max: 60 });
+      const room = str(req.body.room_override, 'El aula', { max: 20000 });
       await db.tx(async (t) => {
         await t.run('DELETE FROM schedule_entries WHERE user_id = ? AND slot_id = ? AND day = ?', uid(req), slotId, day);
         await t.run('INSERT INTO schedule_entries (user_id, subject_id, slot_id, day, room_override) VALUES (?, ?, ?, ?, ?)', uid(req), subjectId, slotId, day, room);
@@ -545,25 +546,32 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const item = (await db.get(`${ITEM_SELECT} WHERE i.id = ? AND i.user_id = ?`, itemId, userId));
     return item ? serializeItem((await attachChecklists(db, [item]))[0]) : null;
   }
-  async function itemInput(userId, b) {
+  // Cada tarea o examen pertenece a un horario: el de su asignatura o, si no tiene, el indicado (o el abierto).
+  async function itemInput(userId, b, activeTimetableId) {
     const item = {
       type: b.type === 'exam' ? 'exam' : b.type === 'task' ? 'task' : null,
-      title: str(b.title, 'El título', { max: 150, required: true }),
-      description: str(b.description, 'La descripción', { max: 5000 }),
+      title: str(b.title, 'El título', { max: 20000, required: true }),
+      description: str(b.description, 'La descripción', { max: 200000 }),
       subject_id: b.subject_id === null || b.subject_id === undefined || b.subject_id === '' ? null : id(b.subject_id),
       due_at: isoDate(b.due_at, 'La fecha'),
       reminder_minutes: b.reminder_minutes === null || b.reminder_minutes === undefined || b.reminder_minutes === '' ? null : int(b.reminder_minutes, 'El aviso', 0, 60 * 24 * 30),
       done: b.done ? 1 : 0,
     };
     if (!item.type) throw bad('El tipo debe ser tarea o examen');
-    if (item.subject_id && !await getSubject(userId, item.subject_id)) throw notFound('Asignatura');
+    const subject = item.subject_id ? await getSubject(userId, item.subject_id) : null;
+    if (item.subject_id && !subject) throw notFound('Asignatura');
+    if (subject) item.timetable_id = subject.timetable_id;
+    else {
+      item.timetable_id = b.timetable_id ? id(b.timetable_id) : activeTimetableId;
+      if (!(await getTimetable(userId, item.timetable_id))) throw notFound('Horario');
+    }
     return item;
   }
   function checklistInput(list) {
     if (list === undefined) return undefined;
-    if (!Array.isArray(list) || list.length > 100) throw bad('La lista de comprobación no es válida');
+    if (!Array.isArray(list) || list.length > 2000) throw bad('La lista de comprobación no es válida');
     return list
-      .map((c) => ({ text: str(c?.text, 'El elemento de la lista', { max: 200 }), done: c?.done ? 1 : 0 }))
+      .map((c) => ({ text: str(c?.text, 'El elemento de la lista', { max: 20000 }), done: c?.done ? 1 : 0 }))
       .filter((c) => c.text);
   }
   async function saveChecklist(t, itemId, list) {
@@ -586,13 +594,13 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   });
 
   r.post('/items', async (req, res) => {
-    const item = await itemInput(uid(req), req.body);
+    const item = await itemInput(uid(req), req.body, req.user.active_timetable_id);
     const checklist = checklistInput(req.body.checklist) || [];
     const now = new Date().toISOString();
     const itemId = await db.tx(async (t) => {
       const { insertId } = await t.run(
-        'INSERT INTO items (user_id, type, title, description, subject_id, due_at, reminder_minutes, done, done_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        uid(req), item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, item.done ? now : null, now
+        'INSERT INTO items (user_id, timetable_id, type, title, description, subject_id, due_at, reminder_minutes, done, done_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        uid(req), item.timetable_id, item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, item.done ? now : null, now
       );
       await saveChecklist(t, insertId, checklist);
       return insertId;
@@ -603,15 +611,15 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   r.put('/items/:id', async (req, res) => {
     const existing = await loadItem(uid(req), id(req.params.id));
     if (!existing) throw notFound('Tarea');
-    const item = await itemInput(uid(req), { ...existing, ...req.body });
+    const item = await itemInput(uid(req), { ...existing, ...req.body }, req.user.active_timetable_id);
     const checklist = checklistInput(req.body.checklist);
     const resetReminder = item.due_at !== existing.due_at || item.reminder_minutes !== existing.reminder_minutes;
     const doneAt = item.done ? (existing.done ? existing.done_at : new Date().toISOString()) : null;
     await db.tx(async (t) => {
       await t.run(
-        `UPDATE items SET type = ?, title = ?, description = ?, subject_id = ?, due_at = ?, reminder_minutes = ?, done = ?, done_at = ?,
+        `UPDATE items SET timetable_id = ?, type = ?, title = ?, description = ?, subject_id = ?, due_at = ?, reminder_minutes = ?, done = ?, done_at = ?,
          reminder_sent_at = CASE WHEN ? = 1 THEN NULL ELSE reminder_sent_at END WHERE id = ?`,
-        item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, doneAt, resetReminder ? 1 : 0, existing.id
+        item.timetable_id, item.type, item.title, item.description, item.subject_id, item.due_at, item.reminder_minutes, item.done, doneAt, resetReminder ? 1 : 0, existing.id
       );
       if (checklist) await saveChecklist(t, existing.id, checklist);
     });
@@ -633,9 +641,9 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   const getEvent = async (userId, eventId) => db.get('SELECT * FROM events WHERE id = ? AND user_id = ?', eventId, userId);
   function eventInput(b) {
     const e = {
-      title: str(b.title, 'El título', { max: 150, required: true }),
-      description: str(b.description, 'La descripción', { max: 5000 }),
-      location: str(b.location, 'El lugar', { max: 120 }),
+      title: str(b.title, 'El título', { max: 20000, required: true }),
+      description: str(b.description, 'La descripción', { max: 200000 }),
+      location: str(b.location, 'El lugar', { max: 20000 }),
       color: color(b.color ?? '#7461a6'),
       start_at: isoDate(b.start_at, 'La fecha de inicio'),
       end_at: b.end_at === null || b.end_at === undefined || b.end_at === '' ? null : isoDate(b.end_at, 'La fecha de fin'),
@@ -678,7 +686,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const row = await db.get('SELECT c.*, i.id AS item_id FROM checklist_items c JOIN items i ON i.id = c.item_id WHERE c.id = ? AND i.user_id = ?', id(req.params.id), uid(req));
     if (!row) throw notFound('Elemento de la lista');
     const done = req.body.done !== undefined ? (req.body.done ? 1 : 0) : row.done;
-    const text = req.body.text !== undefined ? str(req.body.text, 'El texto', { max: 200, required: true }) : row.text;
+    const text = req.body.text !== undefined ? str(req.body.text, 'El texto', { max: 20000, required: true }) : row.text;
     (await db.run('UPDATE checklist_items SET done = ?, text = ? WHERE id = ?', done, text, row.id));
     res.json(await loadItem(uid(req), row.item_id));
   });

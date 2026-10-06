@@ -24,6 +24,7 @@ export function serializeItem(i) {
   return {
     id: i.id,
     type: i.type,
+    timetable_id: i.timetable_id,
     title: i.title,
     description: i.description,
     subject_id: i.subject_id,
