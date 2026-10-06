@@ -13,7 +13,7 @@ if (testUrl) {
   const { default: mysql } = await import('mysql2/promise');
   const conn = await mysql.createConnection(testUrl);
   await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-  for (const t of ['timetables', 'push_subscriptions', 'app_settings', 'checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
+  for (const t of ['events', 'timetables', 'push_subscriptions', 'app_settings', 'checklist_items', 'items', 'schedule_entries', 'subjects', 'time_slots', 'sessions', 'users']) await conn.query(`DROP TABLE IF EXISTS ${t}`);
   await conn.end();
 }
 const db = await openDb(testUrl ? dbConfigFromEnv({ DATABASE_URL: testUrl }) : { file: ':memory:' });
@@ -443,4 +443,46 @@ test('cada horario tiene sus propios días', async () => {
   assert.equal((await c('PUT', `/timetables/${copy.id}`, { visible_days: [9] })).status, 400);
   const nuevo = (await c('POST', '/timetables', { name: 'Fin de semana', visible_days: [6, 0] })).body;
   assert.deepEqual(nuevo.timetables.find((t) => t.id === nuevo.id).visible_days, [0, 6]);
+});
+
+test('eventos', async () => {
+  const c = client();
+  await c('POST', '/auth/register', { name: 'Eva', email: 'eva-ev@x.com', password: 'secreto123', timezone: 'Europe/Madrid' });
+  assert.equal((await c('POST', '/events', { title: '', start_at: '2026-11-01T09:00:00Z' })).status, 400);
+  assert.equal((await c('POST', '/events', { title: 'Mal', start_at: '2026-11-02T09:00:00Z', end_at: '2026-11-01T09:00:00Z' })).status, 400);
+  const conf = await c('POST', '/events', { title: 'Conferencia de marketing', location: 'Auditorio', start_at: '2026-11-03T09:00:00Z', end_at: '2026-11-03T11:00:00Z', color: '#3A7AA6', reminder_minutes: 1440 });
+  assert.equal(conf.status, 201);
+  assert.equal(conf.body.color, '#3a7aa6');
+  assert.equal(conf.body.all_day, false);
+  const congreso = (await c('POST', '/events', { title: 'Congreso', all_day: true, start_at: '2026-11-10T00:00:00Z', end_at: '2026-11-12T22:59:00Z' })).body;
+  assert.equal(congreso.all_day, true);
+  assert.equal((await c('GET', '/events')).body.length, 2);
+  const upd = await c('PUT', `/events/${conf.body.id}`, { title: 'Conferencia de marketing digital' });
+  assert.equal(upd.body.title, 'Conferencia de marketing digital');
+  assert.equal(upd.body.location, 'Auditorio', 'conserva lo no enviado');
+  // Aislamiento
+  const otro = client();
+  await otro('POST', '/auth/register', { name: 'Otro', email: 'otro-ev@x.com', password: 'secreto123' });
+  assert.equal((await otro('GET', '/events')).body.length, 0);
+  assert.equal((await otro('PUT', `/events/${conf.body.id}`, { title: 'x' })).status, 404);
+  assert.equal((await otro('DELETE', `/events/${conf.body.id}`)).status, 404);
+  // Aviso por correo y resumen diario
+  const now = new Date('2026-11-02T12:00:00Z');
+  sent.length = 0;
+  const scheduler = createScheduler({ db, mailer, appUrl: 'http://test', logger: { log() {}, error() {} } });
+  await scheduler.tick(now);
+  const mail = sent.find((m) => m.to === 'eva-ev@x.com' && m.subject.startsWith('Recordatorio: Conferencia'));
+  assert.ok(mail, 'aviso del evento');
+  assert.match(mail.text, /Dónde: Auditorio/);
+  sent.length = 0;
+  await scheduler.tick(now);
+  assert.equal(sent.filter((m) => m.subject.startsWith('Recordatorio: Conferencia')).length, 0, 'no se repite');
+  await c('PUT', '/me/settings', { daily_digest: true, digest_hour: 7 });
+  sent.length = 0;
+  await scheduler.tick(now);
+  const digest = sent.find((m) => m.to === 'eva-ev@x.com' && m.subject.startsWith('Tu resumen'));
+  assert.ok(digest, 'resumen aunque no haya tareas');
+  assert.match(digest.subject, /1 evento/);
+  assert.match(digest.text, /EVENTOS[\s\S]*Conferencia de marketing digital/);
+  assert.equal((await c('DELETE', `/events/${congreso.id}`)).status, 204);
 });

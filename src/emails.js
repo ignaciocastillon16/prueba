@@ -76,24 +76,58 @@ export function reminderEmail(item, user, appUrl, now = new Date()) {
   return { subject, html, text };
 }
 
-export function digestEmail(items, user, appUrl, now = new Date()) {
+/** Fecha de un evento: «miércoles, 14 de octubre de 2026, 10:00–12:00» o «… (todo el día)». */
+export function eventWhen(ev, timeZone) {
+  const day = (iso) => new Intl.DateTimeFormat('es-ES', { timeZone, dateStyle: 'full' }).format(new Date(iso));
+  const hour = (iso) => new Intl.DateTimeFormat('es-ES', { timeZone, timeStyle: 'short' }).format(new Date(iso));
+  const sameDay = !ev.end_at || day(ev.start_at) === day(ev.end_at);
+  if (ev.all_day) return sameDay ? `${day(ev.start_at)} (todo el día)` : `del ${day(ev.start_at)} al ${day(ev.end_at)}`;
+  if (!ev.end_at) return formatDate(ev.start_at, timeZone);
+  return sameDay ? `${day(ev.start_at)}, ${hour(ev.start_at)}–${hour(ev.end_at)}` : `del ${formatDate(ev.start_at, timeZone)} al ${formatDate(ev.end_at, timeZone)}`;
+}
+
+function eventBlock(ev, timeZone) {
+  return `<div style="border-left:4px solid ${esc(ev.color || C.accent)};background:${C.bg};border-radius:8px;padding:13px 15px;margin:10px 0">
+  <div style="font-size:12px;font-weight:700;color:${C.accent}">Evento</div>
+  <div style="font-size:16px;font-weight:600;margin:3px 0">${esc(ev.title)}</div>
+  <div style="font-size:14px;color:${C.ink}">${esc(eventWhen(ev, timeZone))}</div>
+  ${ev.location ? `<div style="font-size:13px;color:${C.muted};margin-top:2px">${esc(ev.location)}</div>` : ''}
+  ${ev.description ? `<p style="font-size:14px;white-space:pre-wrap;margin:8px 0 0;color:${C.ink}">${esc(ev.description)}</p>` : ''}
+</div>`;
+}
+const eventText = (ev, timeZone) =>
+  [`Evento: ${ev.title}`, `Cuándo: ${eventWhen(ev, timeZone)}`, ev.location && `Dónde: ${ev.location}`, ev.description].filter(Boolean).join('\n');
+
+export function eventReminderEmail(ev, user, appUrl, now = new Date()) {
+  const when = relativeTime(ev.start_at, now);
+  const subject = `Recordatorio: ${ev.title} (${when})`;
+  const heading = `Tienes un evento ${when}`;
+  const html = layout(heading, `<p style="font-size:15px;margin:0 0 6px">Hola, ${esc(user.name)}. Te lo recordamos para que no se te pase.</p>${eventBlock(ev, user.timezone)}`, appUrl);
+  const text = `Hola, ${user.name}.\n\n${heading}:\n\n${eventText(ev, user.timezone)}\n${appUrl ? `\n${appUrl}\n` : ''}`;
+  return { subject, html, text };
+}
+
+export function digestEmail(items, user, appUrl, now = new Date(), events = []) {
   const overdue = items.filter((i) => Date.parse(i.due_at) < now.getTime());
   const upcoming = items.filter((i) => Date.parse(i.due_at) >= now.getTime());
   const exams = upcoming.filter((i) => i.type === 'exam').length;
   const parts = [plural(upcoming.length, 'pendiente', 'pendientes')];
   if (exams) parts.push(plural(exams, 'examen', 'exámenes'));
   if (overdue.length) parts.push(plural(overdue.length, 'vencida', 'vencidas'));
+  if (events.length) parts.push(plural(events.length, 'evento', 'eventos'));
   const subject = `Tu resumen de hoy: ${parts.join(', ')}`;
   const section = (title, color, list) =>
     `<h2 style="font:700 12px ${FONT};letter-spacing:.06em;text-transform:uppercase;color:${color};margin:20px 0 4px">${title}</h2>${list.map((i) => itemBlock(i, user.timezone)).join('')}`;
   let body = '';
   if (overdue.length) body += section('Vencidas', C.exam, overdue);
   if (upcoming.length) body += section('Próximos 7 días', C.muted, upcoming);
+  if (events.length) body += `<h2 style="font:700 12px ${FONT};letter-spacing:.06em;text-transform:uppercase;color:${C.accent};margin:20px 0 4px">Eventos</h2>${events.map((e) => eventBlock(e, user.timezone)).join('')}`;
   const html = layout(`Buenos días, ${user.name}`, `<p style="font-size:15px;margin:0">Esto es lo que tienes por delante esta semana.</p>${body}`, appUrl);
   const text = [
     `Buenos días, ${user.name}. Esto es lo que tienes por delante:`,
     overdue.length ? `\nVENCIDAS\n${overdue.map((i) => itemText(i, user.timezone)).join('\n\n')}` : '',
     upcoming.length ? `\nPRÓXIMOS 7 DÍAS\n${upcoming.map((i) => itemText(i, user.timezone)).join('\n\n')}` : '',
+    events.length ? `\nEVENTOS\n${events.map((e) => eventText(e, user.timezone)).join('\n\n')}` : '',
     appUrl || '',
   ].join('\n');
   return { subject, html, text };

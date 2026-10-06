@@ -555,3 +555,45 @@ input[type=color] { width: 40px; height: 34px; border: 1px solid var(--border-st
 
 .days-pick.compact label { padding: 6px 10px; }
 .tt-card .tt-field { margin-bottom: 8px; }
+
+/* Menú de la cuenta (arriba a la derecha) */
+.userbox { position: relative; }
+.user-btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent; background: transparent; color: var(--text);
+  border-radius: 999px; padding: 3px 10px 3px 3px; cursor: pointer; font-weight: 500; }
+.user-btn:hover { background: var(--surface-2); }
+.user-btn.active, .user-btn[aria-expanded="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+.user-btn > .i { width: 16px; height: 16px; color: var(--muted); }
+.user-menu { position: absolute; right: 0; top: calc(100% + 8px); min-width: 240px; max-width: calc(100vw - 24px); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 14px 36px rgba(15, 25, 30, .16); padding: 6px; z-index: 60; animation: rise .15s ease; }
+.user-menu[hidden] { display: none; }
+.um-head { display: flex; flex-direction: column; gap: 1px; padding: 9px 11px 11px; margin-bottom: 4px; border-bottom: 1px solid var(--border); min-width: 0; }
+.um-head small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-menu button { display: flex; align-items: center; gap: 11px; width: 100%; border: none; background: transparent; color: var(--text);
+  padding: 10px 11px; border-radius: 9px; cursor: pointer; font-weight: 500; text-align: left; font-size: 15px; }
+.user-menu button:hover { background: var(--surface-2); }
+.user-menu button.active { background: var(--accent-soft); color: var(--accent); }
+.user-menu button.danger { color: var(--danger); }
+.user-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 2px; }
+
+/* Eventos */
+.btn-event { color: #6a56a0; border-color: color-mix(in srgb, #7461a6 45%, var(--border)); }
+.btn-event:hover { background: color-mix(in srgb, #7461a6 8%, var(--surface)); }
+@media (prefers-color-scheme: dark) { .btn-event { color: #b5a6e6; } }
+.ev-chip { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 6px; border-radius: 5px; flex: none; min-width: 0; cursor: pointer;
+  background: color-mix(in srgb, var(--c) 22%, var(--surface)); color: color-mix(in srgb, var(--c) 65%, var(--text)); border-left: 3px solid var(--c); }
+.ev-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-chip time { margin-right: 4px; font-variant-numeric: tabular-nums; opacity: .85; }
+.dots i.ev { border-radius: 2px; width: 8px; height: 8px; background: var(--c); transform: rotate(45deg); }
+.badge.event { background: color-mix(in srgb, #7461a6 15%, transparent); color: #6a56a0; }
+@media (prefers-color-scheme: dark) { .badge.event { color: #b5a6e6; } }
+.event-card { display: flex; gap: 12px; padding: 12px 12px 12px 14px; border-left: 4px solid var(--c); margin-bottom: 8px; align-items: flex-start; cursor: pointer; max-width: 860px; }
+.event-card .ev-icon { color: var(--c); margin-top: 2px; }
+.event-card .body { flex: 1; min-width: 0; }
+.event-card h3 { font-size: 15.5px; margin: 3px 0 2px; word-break: break-word; }
+.event-card .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); align-items: center; }
+.event-card .meta > span { display: inline-flex; align-items: center; gap: 5px; }
+.event-card .meta .i { width: 14px; height: 14px; }
+.event-card .desc { margin: 4px 0 0; white-space: pre-wrap; color: var(--muted); font-size: 13.5px; }
+.time-field[hidden] { display: none; }
+.day-actions { flex-wrap: nowrap; }
+@media (max-width: 400px) { .day-actions .btn { padding-left: 6px; padding-right: 6px; gap: 3px; font-size: 14px; } }

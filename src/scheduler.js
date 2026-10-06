@@ -1,6 +1,6 @@
 import { ITEM_SELECT, attachChecklists } from './items.js';
-import { reminderEmail, digestEmail } from './emails.js';
-import { reminderPush, digestPush } from './push-messages.js';
+import { reminderEmail, digestEmail, eventReminderEmail } from './emails.js';
+import { reminderPush, digestPush, eventReminderPush } from './push-messages.js';
 
 /** Fecha (YYYY-MM-DD) y hora locales de `date` en la zona horaria indicada. */
 export function localParts(date, timeZone) {
@@ -34,6 +34,19 @@ export function createScheduler({ db, mailer, pusher = null, appUrl = '', logger
       });
       // Si ningún canal está activo, el aviso queda pendiente por si el usuario activa alguno.
       if (attempted && delivered) await db.run('UPDATE items SET reminder_sent_at = ? WHERE id = ?', nowIso, item.id);
+    }
+    // Eventos
+    const events = (
+      await db.all('SELECT * FROM events WHERE reminder_minutes IS NOT NULL AND reminder_sent_at IS NULL AND start_at > ?', nowIso)
+    ).filter((e) => Date.parse(e.start_at) - e.reminder_minutes * 60000 <= now.getTime());
+    for (const ev of events) {
+      const user = await db.get('SELECT * FROM users WHERE id = ?', ev.user_id);
+      const { delivered, attempted } = await deliver(user, {
+        email: () => eventReminderEmail(ev, user, appUrl, now),
+        push: () => eventReminderPush(ev, user, now),
+        what: `el aviso del evento ${ev.id}`,
+      });
+      if (attempted && delivered) await db.run('UPDATE events SET reminder_sent_at = ? WHERE id = ?', nowIso, ev.id);
     }
   }
 
@@ -69,10 +82,11 @@ export function createScheduler({ db, mailer, pusher = null, appUrl = '', logger
         db,
         await db.all(`${ITEM_SELECT} WHERE i.user_id = ? AND i.done = 0 AND i.due_at >= ? AND i.due_at <= ? ORDER BY i.due_at`, user.id, from, to)
       );
-      if (items.length) {
+      const events = await db.all('SELECT * FROM events WHERE user_id = ? AND start_at >= ? AND start_at <= ? ORDER BY start_at', user.id, now.toISOString(), to);
+      if (items.length || events.length) {
         await deliver(user, {
-          email: () => digestEmail(items, user, appUrl, now),
-          push: () => digestPush(items, user, now),
+          email: () => digestEmail(items, user, appUrl, now, events),
+          push: () => digestPush(items, user, now, events),
           what: `el resumen diario del usuario ${user.id}`,
         });
       }

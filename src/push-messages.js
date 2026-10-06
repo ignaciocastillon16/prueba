@@ -15,13 +15,20 @@ export function reminderPush(item, user, now = new Date()) {
   return { title: item.title, body: parts.join(' · '), tag: `item-${item.id}`, url: '/#items' };
 }
 
-export function digestPush(items, user, now = new Date()) {
+export function eventReminderPush(ev, user, now = new Date()) {
+  const parts = [`Evento, ${relativeTime(ev.start_at, now)}`, ev.all_day ? 'todo el día' : shortDate(ev.start_at, user.timezone)];
+  if (ev.location) parts.push(ev.location);
+  return { title: ev.title, body: parts.join(' · '), tag: `event-${ev.id}`, url: '/#month' };
+}
+
+export function digestPush(items, user, now = new Date(), events = []) {
   const overdue = items.filter((i) => Date.parse(i.due_at) < now.getTime());
   const upcoming = items.filter((i) => Date.parse(i.due_at) >= now.getTime());
   const exams = upcoming.filter((i) => i.type === 'exam').length;
   const parts = [`${plural(upcoming.length, 'pendiente', 'pendientes')} esta semana`];
   if (exams) parts.push(plural(exams, 'examen', 'exámenes'));
   if (overdue.length) parts.push(plural(overdue.length, 'vencida', 'vencidas'));
+  if (events.length) parts.push(plural(events.length, 'evento', 'eventos'));
   let body = `${parts.join(', ')}.`;
   if (upcoming[0]) body += ` Lo próximo: ${upcoming[0].title} (${relativeTime(upcoming[0].due_at, now)}).`;
   return { title: `Buenos días, ${user.name.split(' ')[0]}`, body, tag: 'digest', url: '/#items' };

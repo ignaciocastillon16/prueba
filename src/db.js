@@ -106,6 +106,21 @@ CREATE TABLE IF NOT EXISTS timetables (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_timetables_user ON timetables(user_id);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT '#7461a6',
+  start_at TEXT NOT NULL,
+  end_at TEXT,
+  all_day INTEGER NOT NULL DEFAULT 0,
+  reminder_minutes INTEGER,
+  reminder_sent_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_user_start ON events(user_id, start_at);
 `;
 
 // Compatible con MySQL 5.7+, MySQL 8 y MariaDB 10.3+ (lo que ofrece Hostinger).
@@ -221,6 +236,23 @@ const MYSQL_SCHEMA = [
     created_at VARCHAR(30) NOT NULL,
     KEY idx_timetables_user (user_id),
     CONSTRAINT fk_timetables_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ${TABLE_OPTS}`,
+  `CREATE TABLE IF NOT EXISTS events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    description TEXT NOT NULL,
+    location VARCHAR(120) NOT NULL DEFAULT '',
+    color CHAR(7) NOT NULL DEFAULT '#7461a6',
+    start_at VARCHAR(30) NOT NULL,
+    end_at VARCHAR(30) NULL,
+    all_day TINYINT NOT NULL DEFAULT 0,
+    reminder_minutes INT NULL,
+    reminder_sent_at VARCHAR(30) NULL,
+    created_at VARCHAR(30) NOT NULL,
+    KEY idx_events_user_start (user_id, start_at),
+    KEY idx_events_reminders (reminder_sent_at, start_at),
+    CONSTRAINT fk_events_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ${TABLE_OPTS}`,
 ];
 

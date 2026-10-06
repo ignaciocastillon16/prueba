@@ -46,6 +46,7 @@ const ICONS = {
   logout: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="M9.5 16 5.5 12l4-4M5.5 12H15"/>',
   exam: '<path d="M7 3h7.5L19 7.5V21H7Z"/><path d="M14 3v5h5M10 12.5h5.5M10 16.5h5.5"/>',
   down: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
+  event: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="m12 12.2 1.05 2.15 2.35.33-1.7 1.66.4 2.35-2.1-1.1-2.1 1.1.4-2.35-1.7-1.66 2.35-.33Z"/>',
   download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
   palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.7-1.6h2.1a4 4 0 0 0 4-4C20.5 6.6 16.7 3.5 12 3.5Z"/><circle cx="7.8" cy="11.2" r="1.1"/><circle cx="10" cy="7.6" r="1.1"/><circle cx="14.6" cy="7.6" r="1.1"/>',
 };
@@ -155,6 +156,7 @@ const state = {
   slots: [],
   schedule: [],
   items: [],
+  events: [],
   view: 'month',
   cursor: startOfMonth(new Date()),
   selectedDay: dateKey(new Date()),
@@ -219,7 +221,8 @@ function classesOn(day, ttId = activeTT().id) {
 }
 
 async function loadAll() {
-  const [boot, items] = await Promise.all([api('GET', '/bootstrap'), api('GET', '/items')]);
+  const [boot, items, events] = await Promise.all([api('GET', '/bootstrap'), api('GET', '/items'), api('GET', '/events')]);
+  state.events = events;
   state.user = boot.user;
   state.mailConfigured = boot.mail_configured;
   state.pushAvailable = boot.push_available;
@@ -229,6 +232,27 @@ async function loadAll() {
   state.timetables = boot.timetables;
   state.schedule = boot.schedule;
   state.items = items;
+}
+const eventById = (id) => state.events.find((e) => e.id === id);
+/** Días (claves AAAA-MM-DD) que ocupa un evento; los de varios días aparecen en cada uno. */
+function eventDayKeys(ev) {
+  const keys = [];
+  const start = parseKey(dateKey(new Date(ev.start_at)));
+  const end = ev.end_at ? parseKey(dateKey(new Date(ev.end_at))) : start;
+  for (let d = new Date(start); d <= end && keys.length < 62; d.setDate(d.getDate() + 1)) keys.push(dateKey(d));
+  return keys;
+}
+function eventTimeLabel(ev) {
+  if (ev.all_day) return 'Todo el día';
+  const s = timeOf(new Date(ev.start_at));
+  if (!ev.end_at) return s;
+  const e = new Date(ev.end_at);
+  return dateKey(e) === dateKey(new Date(ev.start_at)) ? `${s}–${timeOf(e)}` : `${s} → ${e.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} ${timeOf(e)}`;
+}
+function upsertEvent(ev) {
+  const i = state.events.findIndex((x) => x.id === ev.id);
+  if (i >= 0) state.events[i] = ev; else state.events.push(ev);
+  state.events.sort((a, b) => a.start_at.localeCompare(b.start_at) || a.id - b.id);
 }
 function upsertItem(item) {
   const i = state.items.findIndex((x) => x.id === item.id);
@@ -292,6 +316,8 @@ function renderAuth(mode) {
 /* ============================================================
    Estructura principal
    ============================================================ */
+/* Pestañas visibles; Asignaturas y Ajustes están en el menú de la cuenta (arriba a la derecha). */
+const TAB_VIEWS = ['month', 'week', 'items'];
 const VIEWS = [
   ['month', 'calendar', 'Mes', 'Mes'],
   ['week', 'grid', 'Horario', 'Horario'],
@@ -304,14 +330,38 @@ function renderShell() {
   $('#app').innerHTML = `
     <header class="topbar">
       ${brand()}
-      <nav class="tabs">${VIEWS.map(([id, ic, label, short]) => `<button data-view="${id}">${icon(ic)}<span class="long">${label}</span><span class="short">${short}</span></button>`).join('')}</nav>
-      <div class="userbox"><span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span><span class="name">${esc(state.user.name)}</span><button class="icon-btn" id="logout" title="Cerrar sesión" aria-label="Cerrar sesión">${icon('logout')}</button></div>
+      <nav class="tabs">${VIEWS.filter((v) => TAB_VIEWS.includes(v[0])).map(([id, ic, label, short]) => `<button data-view="${id}">${icon(ic)}<span class="long">${label}</span><span class="short">${short}</span></button>`).join('')}</nav>
+      <div class="userbox">
+        <button class="user-btn" id="user-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu" title="Tu cuenta">
+          <span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span><span class="name">${esc(state.user.name)}</span>${icon('down')}
+        </button>
+        <div class="user-menu" id="user-menu" role="menu" hidden>
+          <div class="um-head"><b class="um-name">${esc(state.user.name)}</b><small>${esc(state.user.email)}</small></div>
+          <button role="menuitem" data-view="subjects">${icon('book')}Asignaturas</button>
+          <button role="menuitem" data-view="settings">${icon('sliders')}Ajustes</button>
+          <hr>
+          <button role="menuitem" id="logout" class="danger">${icon('logout')}Cerrar sesión</button>
+        </div>
+      </div>
     </header>
     <main id="view"></main>`;
   $('.tabs').onclick = (e) => {
     const b = e.target.closest('button[data-view]');
     if (b) location.hash = b.dataset.view;
   };
+  const menu = $('#user-menu');
+  const menuBtn = $('#user-menu-btn');
+  const setMenu = (open) => {
+    menu.hidden = !open;
+    menuBtn.setAttribute('aria-expanded', String(open));
+  };
+  menuBtn.onclick = (e) => { e.stopPropagation(); setMenu(menu.hidden); };
+  menu.onclick = (e) => {
+    const b = e.target.closest('[data-view]');
+    if (b) { location.hash = b.dataset.view; setMenu(false); }
+  };
+  document.addEventListener('click', (e) => { if (!menu.hidden && !e.target.closest('.userbox')) setMenu(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) { setMenu(false); menuBtn.focus(); } });
   $('#logout').onclick = async () => {
     await forgetThisDevice();
     await api('POST', '/auth/logout').catch(() => {});
@@ -326,6 +376,8 @@ function renderView() {
   const view = VIEWS.some(([id]) => id === location.hash.slice(1)) ? location.hash.slice(1) : 'month';
   state.view = view;
   $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  $$('#user-menu [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  $('#user-menu-btn')?.classList.toggle('active', !TAB_VIEWS.includes(view));
   const el = $('#view');
   const scrollEl = $('.scroll', el);
   const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
@@ -362,6 +414,8 @@ function bindViewEvents(root) {
     if (act) { e.stopPropagation(); return ACTIONS[act.dataset.action]?.(act.dataset, returnTo); }
     const edit = t.closest('[data-edit]');
     if (edit) { e.stopPropagation(); return openItemModal(itemById(Number(edit.dataset.edit)), { returnTo }); }
+    const evEl = t.closest('[data-event]');
+    if (evEl) { e.stopPropagation(); return openEventModal(eventById(Number(evEl.dataset.event)), { returnTo }); }
     const cell = t.closest('.day-cell');
     if (cell) return isMobile() ? selectDay(cell.dataset.date) : openDayModal(cell.dataset.date);
     const tt = t.closest('.tt-cell');
@@ -388,6 +442,7 @@ const ACTIONS = {
   today: () => { state.cursor = startOfMonth(new Date()); state.selectedDay = dateKey(new Date()); renderView(); },
   newItem: (d, returnTo) => openItemModal(null, { type: d.type, date: d.date, returnTo }),
   newSubject: () => openSubjectModal(null),
+  newEvent: (d, returnTo) => openEventModal(null, { date: d.date, returnTo }),
   newSub: (d) => openSubjectModal(null, subjectById(Number(d.parent))),
   editSubject: (d) => openSubjectModal(subjectById(Number(d.id))),
   deleteSubject: async (d) => {
@@ -402,6 +457,13 @@ const ACTIONS = {
 /* ============================================================
    Vista mensual
    ============================================================ */
+function eventChip(ev, key) {
+  const startKey = dateKey(new Date(ev.start_at));
+  const time = ev.all_day || key !== startKey ? '' : `<time>${timeOf(new Date(ev.start_at))}</time>`;
+  return `<div class="ev-chip" data-event="${ev.id}" style="--c:${ev.color}" title="${esc(`Evento: ${ev.title} · ${eventTimeLabel(ev)}${ev.location ? ` · ${ev.location}` : ''}`)}">
+    <span class="t">${time}${esc(ev.title)}</span></div>`;
+}
+
 function itemChip(item) {
   const d = new Date(item.due_at);
   const s = subjectById(item.subject_id);
@@ -444,6 +506,13 @@ function monthView() {
     if (!byDay.has(k)) byDay.set(k, []);
     byDay.get(k).push(it);
   }
+  const eventsByDay = new Map();
+  for (const ev of state.events) {
+    for (const k of eventDayKeys(ev)) {
+      if (!eventsByDay.has(k)) eventsByDay.set(k, []);
+      eventsByDay.get(k).push(ev);
+    }
+  }
   const todayKey = dateKey(new Date());
   const classCache = new Map();
   const classesFor = (d) => {
@@ -468,18 +537,19 @@ function monthView() {
     const k = dateKey(d);
     if (mobile) {
       const dayItems = byDay.get(k) || [];
+      const dayEvents = eventsByDay.get(k) || [];
       const groups = state.showClasses ? groupClasses(classesFor(d)) : [];
       return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''} ${k === state.selectedDay ? 'selected' : ''}" data-date="${k}">
         <span class="day-num">${d.getDate()}</span>
         ${groups.length ? `<div class="cbar">${groups.map((g) => `<i style="background:${g.subject.color};flex:${g.count}"></i>`).join('')}</div>` : ''}
-        <div class="dots">${dayItems.slice(0, 4).map((i) => `<i class="${i.type} ${i.done ? 'done' : ''}" style="--c:${subjectById(i.subject_id)?.color || 'var(--muted)'}"></i>`).join('')}${dayItems.length > 4 ? `<b>+${dayItems.length - 4}</b>` : ''}</div>
+        <div class="dots">${dayEvents.slice(0, 2).map((ev) => `<i class="ev" style="--c:${ev.color}"></i>`).join('')}${dayItems.slice(0, 4).map((i) => `<i class="${i.type} ${i.done ? 'done' : ''}" style="--c:${subjectById(i.subject_id)?.color || 'var(--muted)'}"></i>`).join('')}${dayItems.length > 4 ? `<b>+${dayItems.length - 4}</b>` : ''}</div>
       </div>`;
     }
     const classes = state.showClasses ? classesFor(d) : [];
     return `<div class="day-cell ${d.getMonth() !== m ? 'other' : ''} ${k === todayKey ? 'today' : ''}" data-date="${k}">
       <div class="day-head"><span class="day-num">${d.getDate()}</span><button class="icon-btn add" data-action="newItem" data-type="task" data-date="${k}" title="Añadir tarea" aria-label="Añadir tarea">${icon('plus')}</button></div>
       ${classes.length ? `<div class="classes">${groupClasses(classes).map((g) => `<span class="cls" style="--c:${g.subject.color}" title="${esc(`${g.start}–${g.end} ${subjectLabel(g.subject)}`)}">${esc(shortName(g.subject))}${g.count > 1 ? `×${g.count}` : ''}</span>`).join('')}</div>` : ''}
-      <div class="cell-items">${(byDay.get(k) || []).map(itemChip).join('')}</div>
+      <div class="cell-items">${(eventsByDay.get(k) || []).map((ev) => eventChip(ev, k)).join('')}${(byDay.get(k) || []).map(itemChip).join('')}</div>
     </div>`;
   });
 
@@ -494,6 +564,7 @@ function monthView() {
       <label class="toggle hide-mobile"><input type="checkbox" id="toggle-classes" ${state.showClasses ? 'checked' : ''}> Clases</label>
       <button class="btn btn-primary hide-mobile" data-action="newItem" data-type="task">${icon('plus')}Tarea</button>
       <button class="btn btn-exam hide-mobile" data-action="newItem" data-type="exam">${icon('plus')}Examen</button>
+      <button class="btn btn-event hide-mobile" data-action="newEvent">${icon('plus')}Evento</button>
     </div>
     ${mobile ? '<div class="scroll month-scroll">' : ''}
     <div class="month-grid ${mobile ? 'compact' : ''}" style="grid-template-columns:repeat(${days.length},minmax(0,1fr));grid-template-rows:auto repeat(${weeks.length},minmax(0,1fr))${mobile ? '' : `;min-height:${34 + weeks.length * 76}px`}">
@@ -1041,6 +1112,133 @@ async function openDownloadModal() {
 }
 
 /* ============================================================
+   Eventos (conferencias, excursiones, charlas…)
+   ============================================================ */
+const EVENT_COLORS = ['#7461a6', '#3a7aa6', '#2e8a8a', '#3f8c66', '#e0a43a', '#e07b3c', '#c8553d', '#c45a74'];
+
+function eventCard(ev) {
+  return `<article class="card event-card" data-event="${ev.id}" style="--c:${ev.color}">
+    <span class="ev-icon">${icon('event')}</span>
+    <div class="body">
+      <div class="meta">
+        <span class="badge event">Evento</span>
+        <span>${icon('clock')}${esc(eventTimeLabel(ev))}</span>
+        ${ev.location ? `<span>${icon('pin')}${esc(ev.location)}</span>` : ''}
+        ${ev.reminder_minutes !== null ? `<span title="Con aviso">${ev.reminder_sent ? icon('sent') : icon('bell')}</span>` : ''}
+      </div>
+      <h3>${esc(ev.title)}</h3>
+      ${ev.description ? `<p class="desc">${esc(ev.description)}</p>` : ''}
+    </div>
+    <button class="icon-btn" data-event="${ev.id}" title="Editar" aria-label="Editar">${icon('pencil')}</button>
+  </article>`;
+}
+
+/** Crear (ev = null) o editar un evento. */
+function openEventModal(ev, defaults = {}) {
+  const isNew = !ev;
+  const start = ev ? new Date(ev.start_at) : null;
+  const end = ev?.end_at ? new Date(ev.end_at) : null;
+  const d = {
+    title: ev?.title || '',
+    location: ev?.location || '',
+    description: ev?.description || '',
+    color: ev?.color || EVENT_COLORS[0],
+    allDay: ev?.all_day || false,
+    date: start ? dateKey(start) : defaults.date || dateKey(new Date()),
+    time: start && !ev.all_day ? timeOf(start) : '10:00',
+    endDate: end && dateKey(end) !== dateKey(start) ? dateKey(end) : '',
+    endTime: end && !ev.all_day ? timeOf(end) : '',
+    reminder: ev ? ev.reminder_minutes : state.user.default_reminder_minutes,
+  };
+  openModal(`
+    <form id="event-form" novalidate>
+      <div class="modal-head"><h2>${isNew ? 'Nuevo evento' : 'Editar evento'}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button></div>
+      <label class="field"><span>Título</span><input type="text" name="title" maxlength="150" value="${esc(d.title)}" placeholder="Ej.: Conferencia de marketing digital" required></label>
+      <div class="row">
+        <label class="field"><span>Fecha</span><input type="date" name="date" value="${d.date}" required></label>
+        <label class="field time-field"><span>Hora de inicio</span><input type="time" name="time" value="${d.time}"></label>
+      </div>
+      <label class="check-line"><input type="checkbox" name="all_day" ${d.allDay ? 'checked' : ''}><span>Todo el día</span></label>
+      <div class="row">
+        <label class="field"><span>Termina el día (opcional)</span><input type="date" name="end_date" value="${d.endDate}"></label>
+        <label class="field time-field"><span>Hora de fin (opcional)</span><input type="time" name="end_time" value="${d.endTime}"></label>
+      </div>
+      <label class="field"><span>Lugar</span><input type="text" name="location" maxlength="120" value="${esc(d.location)}" placeholder="Ej.: Auditorio de la facultad"></label>
+      <div class="field"><span>Color</span>
+        <div class="swatches" id="ev-colors">${EVENT_COLORS.map((c) => `<button type="button" class="swatch ${c === d.color ? 'active' : ''}" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`).join('')}</div>
+        <input type="hidden" name="color" value="${d.color}">
+      </div>
+      <label class="field"><span>Aviso</span>
+        <select name="reminder">${REMINDERS.map(([v, l]) => `<option value="${v ?? ''}" ${v === d.reminder ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field"><span>Notas</span><textarea name="description" maxlength="5000" placeholder="Ponentes, qué llevar, enlace de inscripción…">${esc(d.description)}</textarea></label>
+      <div class="error" id="form-error"></div>
+      <div class="modal-foot">
+        ${isNew ? '' : `<button type="button" class="btn btn-danger left" id="ev-delete">${icon('trash')}Eliminar</button>`}
+        <button type="button" class="btn" data-close>Cancelar</button>
+        <button class="btn btn-primary">Guardar</button>
+      </div>
+    </form>`, (root) => {
+    const form = $('#event-form', root);
+    const err = $('#form-error', form);
+    const syncAllDay = () => $$('.time-field', form).forEach((f) => { f.hidden = form.all_day.checked; });
+    syncAllDay();
+    form.all_day.onchange = syncAllDay;
+    if (!window.matchMedia('(pointer: coarse)').matches && isNew) setTimeout(() => form.title.focus(), 0);
+    $('#ev-colors', form).onclick = (e) => {
+      const b = e.target.closest('.swatch');
+      if (!b) return;
+      form.color.value = b.dataset.color;
+      $$('#ev-colors .swatch', form).forEach((x) => x.classList.toggle('active', x === b));
+    };
+    const finish = () => {
+      closeModal();
+      renderView();
+      if (defaults.returnTo) openDayModal(defaults.returnTo);
+    };
+    const del = $('#ev-delete', form);
+    if (del) {
+      del.onclick = async () => {
+        if (!confirm(`¿Eliminar el evento «${ev.title}»?`)) return;
+        if ((await attempt(() => api('DELETE', `/events/${ev.id}`), 'Evento eliminado')) === undefined) return;
+        state.events = state.events.filter((x) => x.id !== ev.id);
+        finish();
+      };
+    }
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!form.title.value.trim()) { err.textContent = 'Escribe un título'; form.title.focus(); return; }
+      if (!form.date.value) { err.textContent = 'Indica la fecha'; return; }
+      const allDay = form.all_day.checked;
+      const startLocal = new Date(`${form.date.value}T${allDay ? '00:00' : form.time.value || '00:00'}`);
+      let endLocal = null;
+      if (allDay) {
+        if (form.end_date.value && form.end_date.value !== form.date.value) endLocal = new Date(`${form.end_date.value}T23:59`);
+      } else if (form.end_date.value || form.end_time.value) {
+        endLocal = new Date(`${form.end_date.value || form.date.value}T${form.end_time.value || form.time.value || '00:00'}`);
+      }
+      if (endLocal && endLocal < startLocal) { err.textContent = 'El final debe ser posterior al inicio'; return; }
+      const payload = {
+        title: form.title.value,
+        location: form.location.value,
+        description: form.description.value,
+        color: form.color.value,
+        all_day: allDay,
+        start_at: startLocal.toISOString(),
+        end_at: endLocal ? endLocal.toISOString() : null,
+        reminder_minutes: form.reminder.value === '' ? null : Number(form.reminder.value),
+      };
+      try {
+        upsertEvent(isNew ? await api('POST', '/events', payload) : await api('PUT', `/events/${ev.id}`, payload));
+        toast(isNew ? 'Evento añadido' : 'Cambios guardados');
+        finish();
+      } catch (ex) {
+        err.textContent = ex.message;
+      }
+    };
+  });
+}
+
+/* ============================================================
    Lista de tareas y exámenes
    ============================================================ */
 function itemCard(item) {
@@ -1390,6 +1588,7 @@ function bindSettings(root) {
     if (await saveSettings({ name: e.target.value })) {
       $('.userbox .name').textContent = state.user.name;
       $('.userbox .avatar').textContent = initials(state.user.name);
+      $('.um-name').textContent = state.user.name;
     }
   };
   renderPushBox();
@@ -1465,6 +1664,7 @@ function dayDetail(key, inModal) {
     const dayTT = timetableForDate(date);
     const classes = classesOn(date.getDay(), dayTT.id);
     const items = state.items.filter((i) => dateKey(new Date(i.due_at)) === key);
+    const dayEvents = state.events.filter((ev) => eventDayKeys(ev).includes(key));
     return `
       <div class="modal-head"><h2>${esc(cap(fmtLongDate(date)))}</h2>${inModal ? `<button class="icon-btn" data-close aria-label="Cerrar">${icon('x')}</button>` : ''}</div>
       <div class="group-title" style="margin-top:0">Clases${state.timetables.length > 1 ? ` <span>· ${esc(dayTT.name)}</span>` : ''}</div>
@@ -1473,11 +1673,13 @@ function dayDetail(key, inModal) {
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
           <div><b>${esc(subjectLabel(subject))}</b><div class="info">${entry.room_override || effRoom(subject) ? `<span>${icon('pin')}${esc(entry.room_override || effRoom(subject))}</span>` : ''}${effTeacher(subject) ? `<span>${icon('user')}${esc(effTeacher(subject))}</span>` : ''}</div></div>
         </div>`).join('')}</div>` : `<p class="hint">${ttDays(dayTT).includes(date.getDay()) ? 'No hay clases este día.' : `Este día no está en «${esc(dayTT.name)}».`}</p>`}
+      ${dayEvents.length ? `<div class="group-title">Eventos</div>${dayEvents.map(eventCard).join('')}` : ''}
       <div class="group-title">Tareas y exámenes</div>
       ${items.map(itemCard).join('') || '<p class="hint">Nada para este día.</p>'}
-      <div class="modal-foot">
+      <div class="modal-foot day-actions">
         <button class="btn btn-primary" data-action="newItem" data-type="task" data-date="${key}">${icon('plus')}Tarea</button>
         <button class="btn btn-exam" data-action="newItem" data-type="exam" data-date="${key}">${icon('plus')}Examen</button>
+        <button class="btn btn-event" data-action="newEvent" data-date="${key}">${icon('plus')}Evento</button>
       </div>`;
 }
 

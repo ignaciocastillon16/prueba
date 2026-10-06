@@ -624,6 +624,56 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     res.status(204).end();
   });
 
+  /* ---------- eventos (conferencias, excursiones…) ---------- */
+  const serializeEvent = (e) => ({
+    id: e.id, title: e.title, description: e.description, location: e.location, color: e.color,
+    start_at: e.start_at, end_at: e.end_at, all_day: Boolean(e.all_day),
+    reminder_minutes: e.reminder_minutes, reminder_sent: Boolean(e.reminder_sent_at),
+  });
+  const getEvent = async (userId, eventId) => db.get('SELECT * FROM events WHERE id = ? AND user_id = ?', eventId, userId);
+  function eventInput(b) {
+    const e = {
+      title: str(b.title, 'El título', { max: 150, required: true }),
+      description: str(b.description, 'La descripción', { max: 5000 }),
+      location: str(b.location, 'El lugar', { max: 120 }),
+      color: color(b.color ?? '#7461a6'),
+      start_at: isoDate(b.start_at, 'La fecha de inicio'),
+      end_at: b.end_at === null || b.end_at === undefined || b.end_at === '' ? null : isoDate(b.end_at, 'La fecha de fin'),
+      all_day: b.all_day ? 1 : 0,
+      reminder_minutes: b.reminder_minutes === null || b.reminder_minutes === undefined || b.reminder_minutes === '' ? null : int(b.reminder_minutes, 'El aviso', 0, 60 * 24 * 30),
+    };
+    if (e.end_at && e.end_at < e.start_at) throw bad('El final debe ser posterior al inicio');
+    return e;
+  }
+  r.get('/events', async (req, res) => {
+    res.json((await db.all('SELECT * FROM events WHERE user_id = ? ORDER BY start_at, id', uid(req))).map(serializeEvent));
+  });
+  r.post('/events', async (req, res) => {
+    const e = eventInput(req.body);
+    const { insertId } = await db.run(
+      'INSERT INTO events (user_id, title, description, location, color, start_at, end_at, all_day, reminder_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      uid(req), e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, new Date().toISOString()
+    );
+    res.status(201).json(serializeEvent(await getEvent(uid(req), insertId)));
+  });
+  r.put('/events/:id', async (req, res) => {
+    const existing = await getEvent(uid(req), id(req.params.id));
+    if (!existing) throw notFound('Evento');
+    const e = eventInput({ ...serializeEvent(existing), ...req.body });
+    const reset = e.start_at !== existing.start_at || e.reminder_minutes !== existing.reminder_minutes;
+    await db.run(
+      `UPDATE events SET title = ?, description = ?, location = ?, color = ?, start_at = ?, end_at = ?, all_day = ?, reminder_minutes = ?,
+       reminder_sent_at = CASE WHEN ? = 1 THEN NULL ELSE reminder_sent_at END WHERE id = ?`,
+      e.title, e.description, e.location, e.color, e.start_at, e.end_at, e.all_day, e.reminder_minutes, reset ? 1 : 0, existing.id
+    );
+    res.json(serializeEvent(await getEvent(uid(req), existing.id)));
+  });
+  r.delete('/events/:id', async (req, res) => {
+    const { changes } = await db.run('DELETE FROM events WHERE id = ? AND user_id = ?', id(req.params.id), uid(req));
+    if (!changes) throw notFound('Evento');
+    res.status(204).end();
+  });
+
   r.patch('/checklist/:id', async (req, res) => {
     const row = await db.get('SELECT c.*, i.id AS item_id FROM checklist_items c JOIN items i ON i.id = c.item_id WHERE c.id = ? AND i.user_id = ?', id(req.params.id), uid(req));
     if (!row) throw notFound('Elemento de la lista');
