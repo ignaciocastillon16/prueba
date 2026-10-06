@@ -234,6 +234,7 @@ const MIGRATIONS = [
   'ALTER TABLE time_slots ADD COLUMN timetable_id INT NULL',
   'ALTER TABLE subjects ADD COLUMN timetable_id INT NULL',
   'ALTER TABLE subjects ADD COLUMN parent_id INT NULL',
+  'ALTER TABLE timetables ADD COLUMN visible_days VARCHAR(40) NULL',
 ];
 async function migrate(api) {
   for (const sql of MIGRATIONS) {
@@ -250,13 +251,17 @@ async function migrate(api) {
   for (const u of pending) {
     await api.tx(async (t) => {
       const { insertId } = await t.run(
-        'INSERT INTO timetables (user_id, name, background, created_at) VALUES (?, ?, ?, ?)',
-        u.id, 'Mi horario', u.tt_background || 'rayas', new Date().toISOString()
+        'INSERT INTO timetables (user_id, name, background, visible_days, created_at) VALUES (?, ?, ?, (SELECT visible_days FROM users WHERE id = ?), ?)',
+        u.id, 'Mi horario', u.tt_background || 'rayas', u.id, new Date().toISOString()
       );
       await t.run('UPDATE time_slots SET timetable_id = ? WHERE user_id = ? AND timetable_id IS NULL', insertId, u.id);
       await t.run('UPDATE users SET active_timetable_id = ? WHERE id = ?', insertId, u.id);
     });
   }
+  // Días por horario: los horarios que aún no tienen días toman los que tenía la cuenta.
+  await api.run(
+    "UPDATE timetables SET visible_days = COALESCE((SELECT u.visible_days FROM users u WHERE u.id = timetables.user_id), '[1,2,3,4,5]') WHERE visible_days IS NULL"
+  );
   await migrateSubjectsToTimetables(api);
 }
 

@@ -369,6 +369,7 @@ test('migración: los datos antiguos pasan a «Mi horario»', async () => {
   assert.equal(tts[0].background, 'puntos', 'conserva el fondo elegido');
   assert.equal((await old.get('SELECT timetable_id FROM time_slots WHERE user_id = ?', u.insertId)).timetable_id, tts[0].id);
   assert.equal((await old.get('SELECT active_timetable_id FROM users WHERE id = ?', u.insertId)).active_timetable_id, tts[0].id);
+  assert.ok(tts.every((t) => t.visible_days), 'los horarios reciben días');
   const subs = await old.all("SELECT * FROM subjects WHERE user_id = ? AND name = 'Compartida' ORDER BY id", u.insertId);
   assert.equal(subs.length, 2, 'la asignatura compartida se reparte en dos');
   assert.deepEqual(subs.map((x) => x.timetable_id).sort(), [tts[0].id, tts[1].id].sort());
@@ -426,4 +427,20 @@ test('subasignaturas', async () => {
   assert.equal(left.length, 0);
   assert.equal((await c('GET', '/items')).body.find((i) => i.id === exam.id).subject_id, null);
   assert.equal((await c('GET', '/schedule')).body.filter((e) => e.slot_id === slot.id).length, 0);
+});
+
+test('cada horario tiene sus propios días', async () => {
+  const c = client();
+  await c('POST', '/auth/register', { name: 'Dani', email: 'dani@x.com', password: 'secreto123' });
+  const tt1 = (await c('GET', '/bootstrap')).body.timetables[0];
+  assert.deepEqual(tt1.visible_days, [1, 2, 3, 4, 5]);
+  const copy = (await c('POST', '/timetables', { name: 'Sábados', copy_from: tt1.id })).body;
+  assert.deepEqual(copy.timetables.find((t) => t.id === copy.id).visible_days, [1, 2, 3, 4, 5], 'la copia hereda los días');
+  const upd = (await c('PUT', `/timetables/${copy.id}`, { visible_days: [6, 1, 6] })).body;
+  assert.deepEqual(upd.find((t) => t.id === copy.id).visible_days, [1, 6]);
+  assert.deepEqual(upd.find((t) => t.id === tt1.id).visible_days, [1, 2, 3, 4, 5], 'el otro horario no cambia');
+  assert.equal((await c('PUT', `/timetables/${copy.id}`, { visible_days: [] })).status, 400);
+  assert.equal((await c('PUT', `/timetables/${copy.id}`, { visible_days: [9] })).status, 400);
+  const nuevo = (await c('POST', '/timetables', { name: 'Fin de semana', visible_days: [6, 0] })).body;
+  assert.deepEqual(nuevo.timetables.find((t) => t.id === nuevo.id).visible_days, [0, 6]);
 });

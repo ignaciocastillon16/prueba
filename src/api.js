@@ -170,7 +170,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
         'INSERT INTO users (name, email, password_hash, timezone, created_at) VALUES (?, ?, ?, ?, ?)',
         name, email, hash, tz, new Date().toISOString()
       );
-      const tt = await t.run('INSERT INTO timetables (user_id, name, created_at) VALUES (?, ?, ?)', insertId, 'Mi horario', new Date().toISOString());
+      const tt = await t.run("INSERT INTO timetables (user_id, name, visible_days, created_at) VALUES (?, ?, '[1,2,3,4,5]', ?)", insertId, 'Mi horario', new Date().toISOString());
       for (const s of DEFAULT_SLOTS) {
         await t.run('INSERT INTO time_slots (user_id, timetable_id, start_time, end_time, label, is_break) VALUES (?, ?, ?, ?, ?, ?)', insertId, tt.insertId, ...s);
       }
@@ -402,10 +402,19 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
   });
 
   /* ---------- horarios (puede haber varios) ---------- */
+  // Cada horario tiene sus propios días de la semana.
+  const TT_COLS = 'id, name, start_date, end_date, background, visible_days';
+  const ttRow = (t) => (t ? { ...t, visible_days: JSON.parse(t.visible_days || '[1,2,3,4,5]') } : t);
   const listTimetables = async (userId) =>
-    db.all('SELECT id, name, start_date, end_date, background FROM timetables WHERE user_id = ? ORDER BY id', userId);
+    (await db.all(`SELECT ${TT_COLS} FROM timetables WHERE user_id = ? ORDER BY id`, userId)).map(ttRow);
   const getTimetable = async (userId, ttId) =>
-    db.get('SELECT id, name, start_date, end_date, background FROM timetables WHERE id = ? AND user_id = ?', ttId, userId);
+    ttRow(await db.get(`SELECT ${TT_COLS} FROM timetables WHERE id = ? AND user_id = ?`, ttId, userId));
+  function daysInput(v) {
+    if (!Array.isArray(v)) throw bad('Los días no son válidos');
+    const days = [...new Set(v.map((d) => int(d, 'Día', 0, 6)))].sort();
+    if (!days.length) throw bad('Selecciona al menos un día de la semana');
+    return JSON.stringify(days);
+  }
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   function optDate(v, name) {
     if (v === undefined || v === null || v === '') return null;
@@ -418,6 +427,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
       start_date: optDate(b.start_date, 'La fecha de inicio'),
       end_date: optDate(b.end_date, 'La fecha de fin'),
       background: b.background ?? 'rayas',
+      visible_days: daysInput(b.visible_days ?? [1, 2, 3, 4, 5]),
     };
     if (!TT_BACKGROUNDS.includes(t.background)) throw bad('El fondo elegido no es válido');
     if (t.start_date && t.end_date && t.start_date > t.end_date) throw bad('La fecha de fin debe ser posterior a la de inicio');
@@ -435,14 +445,15 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
 
   // Crea un horario nuevo (vacío con los tramos por defecto, o copia de otro) y lo deja activo.
   r.post('/timetables', async (req, res) => {
-    const t = timetableInput(req.body);
-    if ((await db.get('SELECT COUNT(*) AS n FROM timetables WHERE user_id = ?', uid(req))).n >= 20) throw bad('Máximo 20 horarios');
     const source = req.body.copy_from ? await getTimetable(uid(req), id(req.body.copy_from)) : null;
     if (req.body.copy_from && !source) throw notFound('Horario');
+    // Si no se indican días, una copia usa los del horario original.
+    const t = timetableInput({ ...req.body, visible_days: req.body.visible_days ?? source?.visible_days });
+    if ((await db.get('SELECT COUNT(*) AS n FROM timetables WHERE user_id = ?', uid(req))).n >= 20) throw bad('Máximo 20 horarios');
     const newId = await db.tx(async (tx) => {
       const { insertId } = await tx.run(
-        'INSERT INTO timetables (user_id, name, start_date, end_date, background, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        uid(req), t.name, t.start_date, t.end_date, req.body.background ? t.background : source?.background || 'rayas', new Date().toISOString()
+        'INSERT INTO timetables (user_id, name, start_date, end_date, background, visible_days, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        uid(req), t.name, t.start_date, t.end_date, req.body.background ? t.background : source?.background || 'rayas', t.visible_days, new Date().toISOString()
       );
       if (source) {
         // Las asignaturas se copian como asignaturas nuevas de este horario.
@@ -483,7 +494,7 @@ export function createApi({ db, mailer, pusher = null, appUrl = '' }) {
     const existing = await getTimetable(uid(req), id(req.params.id));
     if (!existing) throw notFound('Horario');
     const t = timetableInput({ ...existing, ...req.body });
-    await db.run('UPDATE timetables SET name = ?, start_date = ?, end_date = ?, background = ? WHERE id = ?', t.name, t.start_date, t.end_date, t.background, existing.id);
+    await db.run('UPDATE timetables SET name = ?, start_date = ?, end_date = ?, background = ?, visible_days = ? WHERE id = ?', t.name, t.start_date, t.end_date, t.background, t.visible_days, existing.id);
     res.json(await listTimetables(uid(req)));
   });
 

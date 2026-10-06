@@ -131,6 +131,20 @@ function setPref(key, value) {
   try { localStorage.setItem('horario.' + key, JSON.stringify(value)); } catch { /* sin almacenamiento */ }
 }
 
+/*
+ * Altura real de la pantalla. Algunos navegadores (los integrados en Instagram o WhatsApp,
+ * o versiones antiguas de Safari y Chrome) no entienden «100dvh» y hacían la app más alta que la
+ * pantalla: al desplazar una lista larga, como Tareas, se movía toda la página y se cortaba la parte
+ * de arriba. Se mide con JavaScript y se recalcula al girar el móvil o cambiar el tamaño.
+ */
+function syncAppHeight() {
+  document.documentElement.style.setProperty('--app-h', `${window.innerHeight}px`);
+}
+syncAppHeight();
+window.addEventListener('resize', syncAppHeight);
+window.addEventListener('orientationchange', () => setTimeout(syncAppHeight, 250));
+window.addEventListener('pageshow', syncAppHeight);
+
 /* ============================================================
    Estado
    ============================================================ */
@@ -158,7 +172,19 @@ const subjectLabel = (s) => (!s ? '' : parentOf(s) ? `${parentOf(s).name} · ${s
 const effRoom = (s) => s?.room || parentOf(s)?.room || '';
 const effTeacher = (s) => s?.teacher || parentOf(s)?.teacher || '';
 const itemById = (id) => state.items.find((i) => i.id === id);
-const visibleDays = () => DAY_ORDER.filter((d) => state.user.visible_days.includes(d));
+/** Días que muestra un horario (cada horario tiene los suyos). */
+const ttDays = (tt) => tt?.visible_days || state.user.visible_days || [1, 2, 3, 4, 5];
+const visibleDays = (tt = activeTT()) => DAY_ORDER.filter((d) => ttDays(tt).includes(d));
+/** Columnas del mes: los días del horario abierto y de los que tienen fechas dentro de ese mes. */
+function monthDays(y, m) {
+  const first = `${y}-${pad(m + 1)}-01`;
+  const last = `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`;
+  const set = new Set(ttDays(activeTT()));
+  for (const t of state.timetables) {
+    if ((t.start_date || t.end_date) && (!t.start_date || t.start_date <= last) && (!t.end_date || t.end_date >= first)) ttDays(t).forEach((d) => set.add(d));
+  }
+  return DAY_ORDER.filter((d) => set.has(d));
+}
 /* Varios horarios: cada uno tiene sus tramos y clases. */
 const activeTT = () => state.timetables.find((t) => t.id === state.user.active_timetable_id) || state.timetables[0];
 const ttSlots = (ttId) => state.slots.filter((s) => s.timetable_id === ttId);
@@ -400,9 +426,9 @@ function groupClasses(classes) {
 }
 
 function monthView() {
-  const days = visibleDays();
   const y = state.cursor.getFullYear();
   const m = state.cursor.getMonth();
+  const days = monthDays(y, m);
   const first = new Date(y, m, 1);
   const last = new Date(y, m + 1, 0);
   const weeks = [];
@@ -422,6 +448,7 @@ function monthView() {
   const classCache = new Map();
   const classesFor = (d) => {
     const tt = timetableForDate(d);
+    if (!ttDays(tt).includes(d.getDay())) return [];
     const k = `${tt.id}-${d.getDay()}`;
     if (!classCache.has(k)) classCache.set(k, classesOn(d.getDay(), tt.id));
     return classCache.get(k);
@@ -529,8 +556,8 @@ function ttSwitcher() {
 }
 
 function weekView() {
-  const days = visibleDays();
   const tt = activeTT();
+  const days = visibleDays(tt);
   const slots = ttSlots(tt.id);
   const toolbar = `
     <div class="toolbar tt-toolbar">
@@ -659,6 +686,12 @@ function openTimetableModal(tt) {
         <label class="field"><span>Hasta (opcional)</span><input type="date" name="end_date" value="${tt?.end_date || ''}"></label>
       </div>
       <p class="hint" style="margin:-6px 0 14px">Si pones fechas, el calendario mensual usará este horario en esos días. Fuera de ellas se usa el horario que tengas abierto.</p>
+      <div class="field"><span>Días de la semana</span>
+        <div class="days-pick compact" id="tt-days">${DAY_ORDER.map((d) => {
+          const on = ttDays(tt || current).includes(d);
+          return `<label class="${on ? 'on' : ''}"><input type="checkbox" value="${d}" ${on ? 'checked' : ''}> ${DAY_SHORT[d]}</label>`;
+        }).join('')}</div>
+      </div>
       ${isNew ? `<label class="field"><span>Empezar con</span><select name="copy_from">
           ${state.timetables.map((t) => `<option value="${t.id}" ${t.id === current.id ? 'selected' : ''}>Una copia de «${esc(t.name)}» (tramos, asignaturas y clases)</option>`).join('')}
           <option value="">Un horario vacío (sin asignaturas, con los tramos por defecto)</option>
@@ -672,6 +705,7 @@ function openTimetableModal(tt) {
     </form>`, (root) => {
     const form = $('#tt-form', root);
     if (!window.matchMedia('(pointer: coarse)').matches) form.name.focus();
+    $('#tt-days', form).onchange = () => $$('#tt-days label', form).forEach((l) => l.classList.toggle('on', $('input', l).checked));
     const del = $('#tt-delete', root);
     if (del) {
       del.onclick = async () => {
@@ -686,7 +720,9 @@ function openTimetableModal(tt) {
     }
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const body = { name: form.name.value, start_date: form.start_date.value || null, end_date: form.end_date.value || null };
+      const visible_days = $$('#tt-days input:checked', form).map((i) => Number(i.value));
+      if (!visible_days.length) { $('#form-error', form).textContent = 'Elige al menos un día de la semana'; return; }
+      const body = { name: form.name.value, start_date: form.start_date.value || null, end_date: form.end_date.value || null, visible_days };
       try {
         if (isNew) {
           applyTimetables(await api('POST', '/timetables', { ...body, copy_from: form.copy_from.value ? Number(form.copy_from.value) : null }));
@@ -818,7 +854,7 @@ function drawIcon(ctx, name, x, y, size, color) {
 /** Dibuja el horario en un lienzo de 1080 px de ancho, con el mismo aspecto que en pantalla. */
 async function timetableCanvas(tt) {
   if (document.fonts) await document.fonts.ready;
-  const days = visibleDays();
+  const days = visibleDays(tt);
   const slots = ttSlots(tt.id);
   const night = tt.background === 'noche';
   const W = 1080;
@@ -1205,16 +1241,19 @@ function openSubjectModal(subject, parent = null) {
 function settingsView() {
   const u = state.user;
   return `<div class="scroll"><div class="settings">
+    ${state.timetables.length > 1 ? `<section class="card tt-card">
+      <label class="field tt-field"><span>Estás editando los días y tramos de</span><select id="s-tt">${state.timetables.map((t) => `<option value="${t.id}" ${t.id === activeTT().id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+      <p class="hint" style="margin:0">Cada horario tiene sus propios días y tramos.</p>
+    </section>` : ''}
     <section class="card">
       <h2>Días de la semana</h2>
-      <p class="hint">Elige qué días aparecen en el calendario mensual y en el horario.</p>
-      <div class="days-pick">${DAY_ORDER.map((d) => `<label class="${u.visible_days.includes(d) ? 'on' : ''}"><input type="checkbox" data-day="${d}" ${u.visible_days.includes(d) ? 'checked' : ''}> ${DAY_LONG[d]}</label>`).join('')}</div>
+      <p class="hint">Días que aparecen en «${esc(activeTT().name)}».</p>
+      <div class="days-pick">${DAY_ORDER.map((d) => `<label class="${ttDays(activeTT()).includes(d) ? 'on' : ''}"><input type="checkbox" data-day="${d}" ${ttDays(activeTT()).includes(d) ? 'checked' : ''}> ${DAY_LONG[d]}</label>`).join('')}</div>
     </section>
 
     <section class="card">
       <h2>Tramos horarios</h2>
-      <p class="hint">Define las horas de clase y los descansos. Cuando termines, pulsa «Guardar cambios».</p>
-      ${state.timetables.length > 1 ? `<label class="field tt-field"><span>Horario</span><select id="s-tt">${state.timetables.map((t) => `<option value="${t.id}" ${t.id === activeTT().id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>` : ''}
+      <p class="hint">Horas de clase y descansos de «${esc(activeTT().name)}». Cuando termines, pulsa «Guardar cambios».</p>
       <div id="slots">${ttSlots(activeTT().id).map((s) => `
         <div class="slot-row" data-slot="${s.id}">
           <input type="time" name="start_time" value="${s.start_time}" aria-label="Inicio">
@@ -1277,8 +1316,11 @@ function bindSettings(root) {
   };
   $('.days-pick', root).onchange = async () => {
     const days = $$('.days-pick input:checked', root).map((i) => Number(i.dataset.day));
-    if (!(await saveSettings({ visible_days: days }))) renderView();
-    else $$('.days-pick label', root).forEach((l) => l.classList.toggle('on', $('input', l).checked));
+    const r = await attempt(() => api('PUT', `/timetables/${activeTT().id}`, { visible_days: days }), 'Días guardados');
+    if (r) {
+      state.timetables = r;
+      $$('.days-pick label', root).forEach((l) => l.classList.toggle('on', $('input', l).checked));
+    } else renderView();
   };
   // Los tramos no se guardan en cada cambio: en el móvil eso cerraba el selector de hora
   // a mitad de escribir. Se marcan como pendientes y se guardan con el botón.
@@ -1430,7 +1472,7 @@ function dayDetail(key, inModal) {
         <div class="day-class" style="--c:${subject.color}">
           <span class="time">${slot.start_time} – ${slot.end_time}</span>
           <div><b>${esc(subjectLabel(subject))}</b><div class="info">${entry.room_override || effRoom(subject) ? `<span>${icon('pin')}${esc(entry.room_override || effRoom(subject))}</span>` : ''}${effTeacher(subject) ? `<span>${icon('user')}${esc(effTeacher(subject))}</span>` : ''}</div></div>
-        </div>`).join('')}</div>` : `<p class="hint">${state.user.visible_days.includes(date.getDay()) ? 'No hay clases este día.' : 'Este día no está en tu semana escolar.'}</p>`}
+        </div>`).join('')}</div>` : `<p class="hint">${ttDays(dayTT).includes(date.getDay()) ? 'No hay clases este día.' : `Este día no está en «${esc(dayTT.name)}».`}</p>`}
       <div class="group-title">Tareas y exámenes</div>
       ${items.map(itemCard).join('') || '<p class="hint">Nada para este día.</p>'}
       <div class="modal-foot">

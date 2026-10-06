@@ -6,7 +6,7 @@ Horaria es una aplicación web de horario escolar para usuarios registrados, con
 
 - **Cuentas de usuario.** Registro e inicio de sesión con contraseña cifrada (bcrypt). Cada usuario solo ve sus propios datos.
 - **Calendario mensual.** Muestra cada día con sus clases (en el color de cada asignatura) y sus tareas y exámenes. Se marca una tarea como hecha directamente desde el calendario. Al pulsar un día se abre su detalle con horas, aulas y profesorado.
-- **Varios horarios.** Puedes tener uno por curso o por cuatrimestre, cada uno con sus propias asignaturas, tramos, clases y fondo. Si les pones fechas, el calendario mensual usa en cada día el horario que toca. Al crear uno nuevo se puede copiar otro.
+- **Varios horarios.** Puedes tener uno por curso o por cuatrimestre, cada uno con sus propios días de la semana, asignaturas, tramos, clases y fondo. Si les pones fechas, el calendario mensual usa en cada día el horario que toca. Al crear uno nuevo se puede copiar otro.
 - **Descargar el horario como imagen.** Genera una imagen lista para guardar en la galería del móvil o descargar en el ordenador.
 - **Horario semanal.** Ocupa toda la pantalla sin hacer scroll. Pulsa una celda para asignar la asignatura y, si quieres, un aula distinta para esa clase.
 - **Tramos horarios y días visibles.** En *Ajustes* eliges qué días de la semana aparecen (por ejemplo, de lunes a viernes o también el sábado) y defines las horas de clase y los recreos.
